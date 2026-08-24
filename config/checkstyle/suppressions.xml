@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<!DOCTYPE suppressions PUBLIC
+        "-//Puppy Crawl//DTD Suppressions 1.0//EN"
+        "http://www.puppycrawl.com/dtds/suppressions_1_0.dtd">
+<suppressions>
+    <!--
+        Methods that are long because the thing they describe is long: a dispatch over every
+        message type, an option table, a handshake with a step per negotiated field, a starter that
+        wires a process up once. Splitting them buys a name per fragment and costs the single
+        reading order, which is the only thing that makes them followable.
+    -->
+    <suppress checks="MethodLength"
+              files="(DisCasAgent|DisCasNode|DisCasNodeConfig|DisCasNodeStarter|Proposer|TcpPeerTransport)\.java"/>
+
+    <!-- Test and example code, where one method is one scenario end to end. -->
+    <suppress checks="MethodLength"
+              files="(HttpServerAsyncTest|HttpServerTest|LockChaosTest|SecureClusterFileMembersExample)\.java"/>
+
+    <!--
+        A chaos test holds a lock, does work under a nemesis, and releases in a finally, each
+        layer with its own cleanup. The depth is the shape of the guarantee being tested.
+    -->
+    <suppress checks="NestedTryDepth" files="LockChaosTest\.java"/>
+
+    <!--
+        HttpServer's response interfaces list their overloads in groups (header, set-body,
+        add-body), with a blank line between groups and none inside one. That grouping is what
+        makes an API of this size readable; a blank line per method would erase it.
+    -->
+    <suppress checks="EmptyLineSeparator" files="HttpServer\.java"/>
+</suppressions>

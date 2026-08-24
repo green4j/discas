@@ -1,0 +1,741 @@
+/*
+ * Copyright (c) 2024-2026 Anatoly Gudkov and others.
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ */
+
+import io.github.green4j.discas.build.SonatypeCentralPortalUploadRepositoryTask
+
+plugins {
+    id 'com.github.johnrengelman.shadow' version '7.1.2' apply false
+}
+
+// The root carries jacoco for the aggregated coverageReport at the bottom of this file, and so
+// needs its own repositories: the subprojects' block below cannot resolve the root's jacocoAnt.
+apply plugin: 'jacoco'
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+defaultTasks 'clean', 'build'
+
+def projectVersion = file('version.txt').text.trim()
+
+def getConfigProperty(final String propertyName) {
+    String value = project.findProperty(propertyName)
+    if (!value) {
+        value = System.getenv(propertyName)
+        if (!value) {
+            return null
+        }
+    }
+    return value.trim()
+}
+
+def addDepsFromProjects(pom, projects) {
+    pom.withXml {
+        def depsNode = asNode().appendNode('dependencies')
+        def addedDeps = [] as Set
+
+        projects.each { proj ->
+            // api -> compile scope
+            proj.configurations.api.allDependencies.each { dep ->
+                if (dep instanceof ExternalModuleDependency
+                        && addedDeps.add("${dep.group}:${dep.name}")) {
+                    def node = depsNode.appendNode('dependency')
+                    node.appendNode('groupId', dep.group)
+                    node.appendNode('artifactId', dep.name)
+                    node.appendNode('version', dep.version)
+                    node.appendNode('scope', 'compile')
+                }
+            }
+
+            // implementation -> runtime scope
+            proj.configurations.implementation.allDependencies.each { dep ->
+                if (dep instanceof ExternalModuleDependency
+                        && addedDeps.add("${dep.group}:${dep.name}")) {
+                    def node = depsNode.appendNode('dependency')
+                    node.appendNode('groupId', dep.group)
+                    node.appendNode('artifactId', dep.name)
+                    node.appendNode('version', dep.version)
+                    node.appendNode('scope', 'runtime')
+                }
+            }
+        }
+    }
+}
+
+ext {
+    discasSrcJavaVersion = JavaVersion.toVersion(srcJavaVersion)
+
+    isRelease = !projectVersion.endsWith('-SNAPSHOT')
+
+    sonatypeReleasesRepoUrl = isRelease
+            ? 'https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/'
+            : 'https://central.sonatype.com/repository/maven-snapshots/'
+
+    sonatypeUsername = getConfigProperty('SONATYPE_USERNAME')
+    sonatypePassword = getConfigProperty('SONATYPE_PASSWORD')
+
+    signingKey = getConfigProperty('SIGNING_GPG_SECRET_KEY')    // ascii-armored secret key
+    signingPassword = getConfigProperty('SIGNING_GPG_PASSWORD') // plain text
+}
+
+def projectPom = {
+    // name and description are per-artifact, and are set at the publication.
+    url = 'https://github.com/green4j/discas'
+
+    scm {
+        connection = 'scm:git:https://github.com/green4j/discas.git'
+        developerConnection = 'scm:git:https://github.com/green4j/discas.git'
+        url = 'https://github.com/green4j/discas.git'
+    }
+
+    licenses {
+        license {
+            name = 'MIT License'
+            url = 'https://opensource.org/licenses/MIT'
+        }
+    }
+
+    developers {
+        developer {
+            id = 'anatolygudkov'
+            name = 'Anatoly Gudkov'
+            email = 'gudkovanatoly@hotmail.com'
+            url = 'https://github.com/anatolygudkov'
+        }
+    }
+}
+
+def sonatypeRepository = {
+    maven {
+        name = 'MavenCentral'
+        url = sonatypeReleasesRepoUrl
+        credentials {
+            username = sonatypeUsername
+            password = sonatypePassword
+        }
+    }
+}
+
+def commonProject = project(':discas-common')
+def nodeProject = project(':discas-node')
+def clientProject = project(':discas-client')
+def agentProject = project(':discas-agent')
+def adminProject = project(':discas-admin')
+def allProject = project(':discas-all')
+def exampleProject = project(':discas-example')
+def intTestProject = project(':discas-int-test')
+def performanceProject = project(':discas-performance')
+
+// The five modules a consumer deploys, and the one description each of them is published under.
+def libraryProjects = [
+        (commonProject) : 'DisCas Common - identity, codec, transport and observability primitives',
+        (nodeProject)   : 'DisCas Node - the CASPaxos node: acceptor, proposer, storage, anti-entropy',
+        (clientProject) : 'DisCas Client - the client API: compare-and-set, lease locks, scan and watch',
+        (agentProject)  : 'DisCas Agent - the HTTP/JSON sidecar in front of a discas cluster',
+        (adminProject)  : 'DisCas Admin - the operator command: dump, load and init',
+]
+
+configure([commonProject,
+           nodeProject,
+           clientProject,
+           agentProject,
+           adminProject,
+           allProject,
+           exampleProject,
+           intTestProject,
+           performanceProject]) {
+    apply plugin: 'java-library'
+    apply plugin: 'checkstyle'
+    apply plugin: 'jacoco'
+
+    group = projectGroup
+    version = projectVersion
+
+    repositories {
+        mavenLocal()
+        mavenCentral()
+    }
+
+    dependencies {
+        checkstyle "com.puppycrawl.tools:checkstyle:${checkstyleVersion}"
+
+        testImplementation "org.junit.jupiter:junit-jupiter:${jupiterVersion}"
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
+
+    java {
+        withSourcesJar()
+        withJavadocJar()
+
+        sourceCompatibility = discasSrcJavaVersion
+        targetCompatibility = discasSrcJavaVersion
+    }
+
+    compileJava {
+        // --release rather than -source/-target alone: it also pins the API, and it keeps the
+        // "bootstrap class path not set" note -- which -Werror turns into a failure -- off newer JDKs.
+        options.release = discasSrcJavaVersion.majorVersion as Integer
+        options.compilerArgs.addAll(['-Xlint:all', '-Werror']) // all warnings, treated as errors
+        options.encoding = 'UTF-8'
+        options.deprecation = true
+    }
+
+    javadoc {
+        // Strict, unlike d4m: doclint is on and a broken {@link} fails the build here rather than
+        // rotting quietly. discas' javadoc is the user documentation, not a summary of it.
+        failOnError = true
+
+        title = "<h1>${project.name}</h1>"
+        options.bottom = "<i>Copyright &#169; 2024-2026 ${projectAuthor} and others. All Rights Reserved.</i>"
+        options.encoding = 'UTF-8'
+        options.docEncoding = 'UTF-8'
+        options.charSet = 'UTF-8'
+        if (JavaVersion.current().isJava10Compatible()) {
+            options.addBooleanOption 'html5', true
+        }
+        options.addStringOption('Xdoclint:all,-missing', '-quiet')
+    }
+
+    jar {
+        manifest {
+            attributes 'Implementation-Title': project.name,
+                    'Implementation-Version': projectVersion,
+                    'Implementation-Vendor': projectAuthor
+        }
+        includeEmptyDirs = false
+    }
+
+    checkstyle {
+        toolVersion = "${checkstyleVersion}"
+    }
+
+    tasks.withType(JacocoReport).configureEach {
+        reports { xml.required = true; html.required = true }
+    }
+
+    tasks.withType(Sign).configureEach {
+        onlyIf {
+            isRelease && gradle.taskGraph.hasTask(tasks.publish)
+        }
+    }
+
+    // Which classes run, by @Tag. Overridable per invocation:
+    //   ./gradlew test -PincludeTags=chaos   -- only the chaos/soak/fuzz suites
+    //   ./gradlew test -PexcludeTags=        -- everything, chaos included
+    // Intensity is a separate axis, and stays with discas.test.profile.
+    def junitPlatform = { spec, defaultExcludes ->
+        spec.useJUnitPlatform {
+            if (project.hasProperty('includeTags')) {
+                includeTags project.property('includeTags').toString().split(',')
+            }
+            def excludes = project.hasProperty('excludeTags')
+                    ? project.property('excludeTags').toString()
+                    : defaultExcludes
+            if (excludes) {
+                excludeTags excludes.split(',')
+            }
+        }
+    }
+
+    // Gradle's process launcher does not do a PATH lookup the way a shell does: `commandLine
+    // 'docker'` dies with "error=2, No such file or directory" even when docker is plainly on
+    // PATH -- which silently disabled the whole lookup below. Resolve the binary to an absolute
+    // path ourselves before exec'ing it.
+    def dockerExecutable = {
+        def path = System.getenv('PATH') ?: ''
+        // Homebrew and Colima's own bin are appended: a GUI-launched or long-lived daemon can
+        // hold a PATH that predates them.
+        def dirs = path.split(File.pathSeparator).toList() +
+                ['/opt/homebrew/bin', '/usr/local/bin', "${System.getProperty('user.home')}/.docker/bin"]
+        return dirs.findResult { dir ->
+            def candidate = new File(dir as String, 'docker')
+            candidate.isFile() && candidate.canExecute() ? candidate.absolutePath : null
+        }
+    }
+
+    // True only when we positively established that nothing is listening. Unix-domain sockets
+    // arrived in Java 16 and CI's baseline daemon is 11, so a JVM that cannot probe answers
+    // "not refusing" and the caller keeps its best-effort guess rather than losing a live socket.
+    def socketRefusing = { String path ->
+        try {
+            def channel = java.nio.channels.SocketChannel.open(java.net.StandardProtocolFamily.UNIX)
+            try {
+                channel.connect(java.net.UnixDomainSocketAddress.of(path))
+                return false
+            } finally {
+                channel.close()
+            }
+        } catch (IOException refused) {
+            return true
+        } catch (Throwable noUnixSocketSupport) {
+            return false
+        }
+    }
+
+    // Testcontainers looks for DOCKER_HOST or /var/run/docker.sock and does not read docker
+    // contexts, so on colima, Rancher Desktop or rootless Podman the CLI works while the
+    // Docker-gated tests report "Could not find a valid Docker environment" -- an environment
+    // problem that reads exactly like a broken test. Ask the CLI where its endpoint actually is
+    // and hand that to the test JVM. No-op when DOCKER_HOST is already set, and when there is no
+    // docker at all the gated tests fail on the environment as before.
+    def dockerHostFromContext = {
+        if (System.getenv('DOCKER_HOST')) {
+            return null
+        }
+        def docker = dockerExecutable()
+        if (docker) {
+            try {
+                def out = new ByteArrayOutputStream()
+                def result = exec {
+                    commandLine docker, 'context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'
+                    standardOutput = out
+                    errorOutput = new ByteArrayOutputStream()
+                    ignoreExitValue = true
+                }
+                def host = out.toString().trim()
+                if (result.exitValue == 0 && host) {
+                    return host
+                }
+            } catch (Exception e) {
+                logger.warn("docker context lookup failed (${e.message}); falling back to socket probe")
+            }
+        }
+        // No CLI, or it could not answer: probe the sockets a daemon would expose. Keeps the
+        // Docker-gated tests runnable when only the VM is present. A socket file outlives the VM
+        // that created it, so connect before trusting it: handing Testcontainers a dead socket
+        // turns its own detection off and trades a clear miss for a connection error.
+        def fallbacks = ["${System.getProperty('user.home')}/.colima/default/docker.sock",
+                         "${System.getProperty('user.home')}/.docker/run/docker.sock"]
+        return fallbacks.findResult { path ->
+            if (!new File(path as String).exists()) {
+                return null
+            }
+            if (socketRefusing(path as String)) {
+                logger.warn("ignoring stale docker socket ${path}: nothing is listening " +
+                        '(is the VM stopped?). Leaving Testcontainers to its own detection.')
+                return null
+            }
+            return "unix://${path}"
+        }
+    }
+
+    // Propagate -Ddiscas.* from the Gradle invocation into the forked test JVM so profile knobs
+    // reach TestProfile / assumeTrue gates.
+    def forwardDiscasProperties = { spec ->
+        System.getProperties().each { k, v ->
+            if (k.toString().startsWith('discas.')) {
+                spec.systemProperty k.toString(), v.toString()
+            }
+        }
+        def dockerHost = dockerHostFromContext()
+        if (dockerHost) {
+            spec.environment 'DOCKER_HOST', dockerHost
+            // Testcontainers' Ryuk resource reaper bind-mounts the socket at its canonical path.
+            spec.environment 'TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE', '/var/run/docker.sock'
+        }
+    }
+
+    def testReporting = { spec ->
+        spec.testLogging {
+            events 'skipped', 'failed'
+            showStandardStreams = true
+            exceptionFormat = 'full'
+        }
+        spec.afterSuite { desc, result ->
+            if (!desc.parent) {
+                println "Results: ${result.resultType} (${result.testCount} tests, " +
+                        "${result.successfulTestCount} successes, " +
+                        "${result.failedTestCount} failures, " +
+                        "${result.skippedTestCount} skipped)"
+            }
+        }
+    }
+
+    // The default build excludes @Tag("chaos"): those suites are a third of the suite's wall time
+    // and are soak tests, which is a different question from "did this change break anything".
+    // They are not optional -- testQuick runs them scaled down for pre-commit, testLong runs the
+    // full soak, and either can be wired into CI. What changed is only that `./gradlew build`
+    // stopped paying for them on every run.
+    test {
+        junitPlatform(it, 'chaos')
+        forwardDiscasProperties(it)
+        testReporting(it)
+    }
+
+    ['testQuick': 'quick', 'testLong': 'long'].each { taskName, profile ->
+        tasks.register(taskName, Test) {
+            group = 'verification'
+            description = "Runs every test, chaos included, with discas.test.profile=${profile}"
+            junitPlatform(it, null)   // chaos is the point of these tasks
+            forwardDiscasProperties(it)
+            testReporting(it)
+            // Set after the forwarding, so an explicit -Ddiscas.test.profile cannot override the
+            // profile this task exists to pin.
+            systemProperty 'discas.test.profile', profile
+            testClassesDirs = sourceSets.test.output.classesDirs
+            classpath = sourceSets.test.runtimeClasspath
+        }
+    }
+}
+
+// The five published libraries. One publication each, from the java component, signed on release.
+configure(libraryProjects.keySet()) {
+    apply plugin: 'maven-publish'
+    apply plugin: 'signing'
+
+    description = libraryProjects[project]
+
+    publishing {
+        publications {
+            discas(MavenPublication) {
+                from components.java
+                pom(projectPom)
+                pom.name = project.name
+                pom.description = project.description
+            }
+        }
+
+        repositories(sonatypeRepository)
+    }
+
+    signing {
+        if (signingKey) {
+            useInMemoryPgpKeys(signingKey, signingPassword)
+        }
+        sign publishing.publications.discas
+    }
+}
+
+configure(commonProject) {
+    // No dependencies: this is the bottom of the stack.
+}
+
+configure(nodeProject) {
+    dependencies {
+        // api: NodeId, ClusterId and the transport/observability types in discas-common stand in
+        // NodeConfig and DisCasNodeFactory's signatures, so anyone embedding a node compiles against
+        // them.
+        api commonProject
+    }
+
+    // The `discas-node` command. This module stays a library first -- a node is meant to be embedded,
+    // and `application` adds distribution tasks without touching the jar or the API -- but a standalone
+    // node also has to be startable by somebody who is not writing Java.
+    //
+    // The name is not decoration. `discas-admin init` generates a RUN.md whose start commands read
+    // `discas-node --node-id ...`, and instructions whose commands cannot be pasted into a terminal are
+    // not instructions. `applicationName` is left alone because it defaults to the project name, which
+    // is already exactly that: a second place to spell it is a second place to spell it wrongly.
+    //
+    // One consequence, true of all three executables here: `application` puts distZip and distTar on
+    // `assemble`, so `./gradlew build` now produces distribution archives. That is what an operator
+    // ships, so they stay on.
+    //   ./gradlew :discas-node:installDist  ->  discas-node/build/install/discas-node/bin/discas-node
+    apply plugin: 'application'
+
+    application {
+        mainClass = 'io.github.green4j.discas.node.starter.DisCasNodeStarter'
+    }
+}
+
+configure(clientProject) {
+    dependencies {
+        api commonProject
+    }
+}
+
+configure(agentProject) {
+    dependencies {
+        api commonProject
+        implementation clientProject
+    }
+
+    // The `discas-agent` command -- the sidecar an operator runs, rather than embeds. Same argument as
+    // the node above, which carries it in full.
+    apply plugin: 'application'
+
+    application {
+        mainClass = 'io.github.green4j.discas.agent.starter.DisCasAgentStarter'
+    }
+}
+
+configure(adminProject) {
+    dependencies {
+        api commonProject
+        api clientProject
+        implementation nodeProject
+    }
+
+    // The `discas-admin` command. Of the three this is the one that is *only* a command: nothing
+    // depends on this module, and dump/load/init are things an operator does, never things a program
+    // embeds. Same argument as the node above, which carries it in full.
+    apply plugin: 'application'
+
+    application {
+        mainClass = 'io.github.green4j.discas.admin.starter.DisCasAdminStarter'
+    }
+}
+
+// discas-all: the five modules a consumer deploys -- common, node, client, agent, admin -- in one
+// jar. It has no sources of its own, and that is the point: nothing here is a sixth place where
+// behaviour can live, only a packaging of the other five.
+//
+// The rest are left out because nobody deploys them: discas-example is sample code,
+// discas-int-test is a test-only module, and discas-performance is an instrument.
+configure(allProject) {
+    apply plugin: 'maven-publish'
+    apply plugin: 'signing'
+    apply plugin: 'com.github.johnrengelman.shadow'
+
+    description = 'DisCas All - bundled jar of discas-common, -node, -client, -agent and -admin'
+
+    def bundled = libraryProjects.keySet().toList()
+
+    dependencies {
+        // api rather than implementation: everything bundled here is on the consumer's compile
+        // classpath by definition -- that is what "all" means.
+        bundled.each { api it }
+    }
+
+    // The invariant the bundle rests on, checked rather than trusted. A module that grows an external
+    // runtime dependency would otherwise be packed in silently, and "discas has no runtime
+    // dependencies" would stop being true of the artifact people actually ship -- at which point this
+    // jar needs relocation rules, which is a decision and not a default.
+    def refuseForeignArtifacts = { ->
+        def foreign = configurations.runtimeClasspath.incoming.resolutionResult.allDependencies.findAll {
+            it.requested.displayName != null && !it.requested.displayName.startsWith('project ')
+        }
+        if (!foreign.isEmpty()) {
+            throw new GradleException(
+                    'discas-all bundles project output only, but the modules now pull in: '
+                            + foreign.collect { it.requested.displayName }.unique().join(', ')
+                            + '. Either drop the dependency or decide, deliberately, that the bundled '
+                            + 'jar carries third-party code -- which needs relocation rules here.')
+        }
+    }
+
+    shadowJar {
+        // No classifier: this *is* the module's jar, not a variant beside one.
+        archiveBaseName = jar.archiveBaseName
+        archiveAppendix = jar.archiveAppendix
+        archiveClassifier = ''
+        manifest.attributes(
+                'Implementation-Title': project.name,
+                'Implementation-Version': projectVersion,
+                'Implementation-Vendor': projectAuthor,
+                'Automatic-Module-Name': 'io.github.green4j.discas.all')
+
+        dependencies {
+            bundled.each { include(project(it.path)) }
+        }
+
+        // Nothing is relocated, and nothing needs to be: discas has no third-party runtime code to
+        // collide with anything on a consumer's classpath. This keeps that true rather than assuming it.
+        doFirst { refuseForeignArtifacts() }
+    }
+
+    jar.finalizedBy shadowJar
+
+    // Deliberately no Main-Class: this jar holds three of them -- the node, the agent and the admin CLI
+    // -- and picking one would make the other two look like afterthoughts. Run them by name:
+    //   java -cp discas-all.jar io.github.green4j.discas.node.starter.DisCasNodeStarter --help
+    // The start scripts from `installDist` remain the shorter way.
+
+    sourcesJar {
+        from files(bundled.collect { it.sourceSets.main.allSource })
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    }
+
+    javadoc {
+        // One javadoc over all five, so a reader following a link from the client into the node does
+        // not leave the document.
+        source = files(bundled.collect { it.sourceSets.main.allJava }).asFileTree
+        title = "<h1>${projectName}</h1>"
+    }
+
+    publishing {
+        publications {
+            discasAll(MavenPublication) {
+                artifact shadowJar
+                artifact sourcesJar
+                artifact javadocJar
+                pom(projectPom)
+                pom.name = project.name
+                pom.description = project.description
+                addDepsFromProjects(pom, bundled)
+            }
+        }
+
+        repositories(sonatypeRepository)
+    }
+
+    signing {
+        if (signingKey) {
+            useInMemoryPgpKeys(signingKey, signingPassword)
+        }
+        sign publishing.publications.discasAll
+    }
+}
+
+configure(exampleProject) {
+    description = 'DisCas usage examples'
+
+    dependencies {
+        implementation commonProject
+        implementation nodeProject
+        implementation clientProject
+    }
+
+    // Some examples are executable specifications rather than demonstrations: they start a cluster,
+    // exercise a documented claim -- breaking the cluster on purpose where the claim is about failure
+    // -- and throw when the claim does not hold. These tasks run them, so an example cannot become
+    // prose that merely compiles.
+    //
+    // Deliberately only the asserting ones. The rest are walkthroughs -- they print, they do not
+    // check -- and SecureClusterFileMembersExample provisions a demo PKI with keytool, which is a
+    // different kind of slow.
+    def assertingExamples = [
+            'QuickstartExample'         : 'every KV operation once, each outcome required to be applied',
+            'ContentionExample'         : 'two clients on one key: no lost update',
+            'CoordinatorFailoverExample': 'a node killed mid-flight: the failover table holds',
+    ]
+
+    def exampleTasks = assertingExamples.collect { className, what ->
+        tasks.register("run${className}", JavaExec) {
+            group = 'verification'
+            description = "Run ${className} as an assertion -- ${what}"
+            classpath = sourceSets.main.runtimeClasspath
+            mainClass = "io.github.green4j.discas.example.${className}"
+            // The example throws on a broken claim; a non-zero exit must fail the build rather than
+            // scroll past in the log.
+            ignoreExitValue = false
+        }
+    }
+
+    tasks.register('runAssertingExamples') {
+        group = 'verification'
+        description = 'Run every example that asserts its claims, failing the build if one does not hold'
+        dependsOn exampleTasks
+    }
+}
+
+configure(intTestProject) {
+    description = 'DisCas integration, chaos and soak tests'
+
+    dependencies {
+        testImplementation commonProject
+        testImplementation nodeProject
+        testImplementation clientProject
+        testImplementation agentProject
+        testImplementation adminProject
+
+        // Docker-backed integration tests (step-ca CA rotation). Only exercised
+        // under the `long` test profile; the default suite stays Docker-free.
+        testImplementation platform("org.testcontainers:testcontainers-bom:${testcontainersVersion}")
+        testImplementation 'org.testcontainers:testcontainers'
+        testImplementation 'org.testcontainers:junit-jupiter'
+    }
+}
+
+configure(performanceProject) {
+    description = 'DisCas performance instruments'
+
+    dependencies {
+        implementation commonProject
+        implementation nodeProject
+        implementation clientProject
+    }
+
+    tasks.register('delayAccuracy', JavaExec) {
+        group = 'verification'
+        description = 'Measures the instrument: how accurately the delaying link delivers, spin vs park'
+        mainClass = 'io.github.green4j.discas.performance.DelayAccuracy'
+        classpath = sourceSets.main.runtimeClasspath
+    }
+
+    tasks.register('roundTripProbe', JavaExec) {
+        group = 'verification'
+        description = 'Counts how many times an operation crosses a delayed link, and how long it takes'
+        mainClass = 'io.github.green4j.discas.performance.RoundTripProbe'
+        classpath = sourceSets.main.runtimeClasspath
+    }
+
+    tasks.register('envelope', JavaExec) {
+        group = 'verification'
+        description = 'Measures the performance envelope and prints it; asserts nothing'
+        mainClass = 'io.github.green4j.discas.performance.PerformanceEnvelope'
+        classpath = sourceSets.main.runtimeClasspath
+        // The delaying link spins a core per direction while it is in use (see DelayLink), so leave the
+        // JIT alone about it and let the run own the machine.
+        jvmArgs = ['-Xmx1g']
+        // ./gradlew :discas-performance:envelope --args='latency'  runs one section
+        if (project.hasProperty('sections')) {
+            args = project.property('sections').toString().split(',').toList()
+        }
+    }
+
+    // Nothing here is coverage-bearing, and a report that counted it would dilute the signal the root
+    // coverageReport exists to give.
+    jacocoTestReport.enabled = false
+}
+
+// Aggregated coverage. Per-module reports are misleading here: discas-node's main code is largely
+// exercised by the discas-int-test module, so a module-local report marks the core as uncovered.
+// This one takes execution data from every module's tests and attributes it to every module's main
+// sources, which is the only view in which "never reached by the whole suite" means anything.
+//
+//   ./gradlew coverageReport
+//   build/reports/jacoco/coverageReport/html/index.html
+tasks.register('coverageReport', JacocoReport) {
+    group = 'verification'
+    description = 'Coverage of every module\'s main sources by every module\'s tests'
+    // `test` only. Depending on withType(Test) pulls in testQuick/testLong, whose chaos and soak
+    // suites take a quarter of an hour and are a different question from "what does the suite reach".
+    dependsOn subprojects.collect { it.tasks.named('test') }
+
+    // discas-int-test is the test source; discas-example is sample code whose 0% only says "no test
+    // runs the examples", which is true and is tracked separately rather than diluting this signal.
+    // discas-all has no sources at all -- it is a packaging of the others, already counted here.
+    def uncovered = ['discas-int-test', 'discas-example', 'discas-performance', 'discas-all']
+    def covered = subprojects.findAll { !(it.name in uncovered) }
+    additionalSourceDirs.setFrom(files(covered.collect { it.sourceSets.main.allSource.srcDirs }))
+    sourceDirectories.setFrom(files(covered.collect { it.sourceSets.main.allSource.srcDirs }))
+    classDirectories.setFrom(files(covered.collect { it.sourceSets.main.output }))
+    executionData.setFrom(files(subprojects.collect {
+        it.tasks.named('test').get().jacoco.destinationFile
+    }).filter { it.exists() })
+
+    reports {
+        xml.required = true
+        xml.outputLocation = layout.buildDirectory.file('reports/jacoco/coverageReport/coverage.xml')
+        html.required = true
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/coverageReport/html')
+    }
+}
+
+// One entry point for "everything is verified"
+tasks.register('verify') {
+    group = 'verification'
+    description = 'Everything: unit + integration + chaos/soak, the asserting examples, and coverage'
+    // Per subproject: the root has no `java` plugin, so it has no `check` of its own.
+    dependsOn subprojects.collect { it.tasks.named('check') }
+    dependsOn ':discas-int-test:testLong'               // the chaos/soak suites `test` excludes
+    dependsOn ':discas-example:runAssertingExamples'    // the examples that check rather than print
+    dependsOn 'coverageReport'
+}
+
+// Release only. Sonatype's OSSRH bridge stages a repository per publish; this hands that staged
+// repository to the Central Portal and drops it. Snapshots go straight to the snapshot repository
+// and the task returns without doing anything.
+tasks.register('uploadArtifactsToSonatypeCentralPortal', SonatypeCentralPortalUploadRepositoryTask) {
+    portalUsername.set(sonatypeUsername)
+    portalPassword.set(sonatypePassword)
+    groupId.set(projectGroup)
+    snapshotRelease.set(!isRelease)
+}

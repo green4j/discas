@@ -1,0 +1,11 @@
+.gradle/
+
+build/
+.nb-gradle/
+
+.idea/
+out/
+
+tmp/
+
+.DS_Store

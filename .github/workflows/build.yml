@@ -1,0 +1,67 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  # A backstop for anything time-dependent that a PR run happens to miss. The chaos suites are
+  # soak tests: passing once is weaker evidence than passing repeatedly.
+  schedule:
+    - cron: '0 3 * * *'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gradle-build:
+    name: Gradle Build (JDK ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [ '11', '17', '21', '25' ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: gradle
+
+      - name: Build
+        run: ./gradlew --no-daemon --stacktrace clean build
+
+  # One job calling one Gradle task. The definition of "green" lives in build.gradle
+  # (`./gradlew verify`) rather than being restated as a list of steps here -- a second copy is a
+  # second place for it to drift, and this project has already been bitten by a suite nothing ran.
+  # `build` above excludes the chaos and soak suites; this is where they run.
+  # See docs/dev/10-testing.md.
+  verify:
+    name: Verify (unit + integration + chaos/soak + coverage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 11 (the supported baseline)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: gradle
+
+      - name: Verify
+        run: ./gradlew --no-daemon --stacktrace verify

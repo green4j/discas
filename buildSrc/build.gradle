@@ -1,0 +1,25 @@
+/*
+ * Copyright (c) 2024-2026 Anatoly Gudkov and others.
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ */
+
+def rootProps = new Properties()
+file("${rootDir.parentFile}/gradle.properties").withInputStream {
+    rootProps.load(it)
+}
+rootProps.each { k, v ->
+    if (!project.hasProperty(k)) {
+        ext[k] = v
+    }
+}
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+dependencies {
+    implementation "io.github.green4j:green-jelly:${greenJellyVersion}"
+}
