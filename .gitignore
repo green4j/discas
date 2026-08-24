@@ -1,11 +1,12 @@
 .gradle/
 
-build/
+/build/
+/*/build/
 .nb-gradle/
 
 .idea/
-out/
+/out/
 
-tmp/
+/tmp/
 
 .DS_Store
