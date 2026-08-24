@@ -1890,13 +1890,13 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         return true;
     }
 
-    @SuppressWarnings("unchecked")
     /**
      * Take the pending request a response belongs to, and stop its timer.
      *
      * @return the entry, or {@code null} if nothing is waiting -- a late answer to a request that
      *         already failed over, timed out or was completed by another coordinator
      */
+    @SuppressWarnings("unchecked")
     private PendingEntry takePending(final long correlationId) {
         final PendingEntry entry = pending.remove(correlationId);
         if (entry != null && entry.timerHandle != null) {

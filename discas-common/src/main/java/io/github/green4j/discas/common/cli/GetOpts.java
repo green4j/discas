@@ -29,7 +29,7 @@ import java.util.Objects;
  *   <li>Default values and a {@code required} constraint.</li>
  *   <li>Positional (non-option) argument capture, and {@code --} end-of-options
  *       marker.</li>
- *   <li>Unambiguous long-option prefix matching ({@code --verb} -> {@code --verbose}).</li>
+ *   <li>Unambiguous long-option prefix matching ({@code --verb} -&gt; {@code --verbose}).</li>
  *   <li>Automatic, word-wrapped {@code --help} and usage generation.</li>
  * </ul>
  *
@@ -122,7 +122,7 @@ import java.util.Objects;
  * {@code <name>} placeholders, space-separated, aligned columns):
  * <ul>
  *   <li>{@link #metavar(String)} -- override the value placeholder (default {@code <long-name>}),
- *       e.g. {@code .stringOpt("template", 't', ...).metavar("<file>")} -> {@code -t, --template <file>}.</li>
+ *       e.g. {@code .stringOpt("template", 't', ...).metavar("<file>")} -&gt; {@code -t, --template <file>}.</li>
  *   <li>{@link #choices(String...)} -- restrict the value to a set; it is listed in the help as
  *       {@code (one of: ...)} and enforced at parse time.</li>
  *   <li>{@link #optionalArg(String)} -- make the value optional ({@code -u, --untracked[=<mode>]}):
