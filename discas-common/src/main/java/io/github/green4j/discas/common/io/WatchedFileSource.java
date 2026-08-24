@@ -12,6 +12,7 @@ import io.github.green4j.discas.common.Hex;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -27,7 +28,8 @@ import java.util.function.Consumer;
  * <p>Change is detected in three gates, cheapest first: the {@link WatchedFile}'s mtime-and-size
  * signature, then a combined SHA-256 of the contents, so byte-identical files are not even
  * re-parsed, then {@code equals} against the current value, so a cosmetic edit that parses to the
- * same value is not re-published.
+ * same value is not re-published. Ahead of all three, a file caught mid-write is not read as a
+ * revision at all -- see {@link #readAll()}.
  *
  * <p>The constructor primes the value from the first check -- the same read that sets the
  * change-detection baseline, so no later change can be missed -- and <b>fails fast</b> if nothing
@@ -44,6 +46,7 @@ public final class WatchedFileSource<T> implements Reloadable<T>, AutoCloseable 
 
     private final List<Path> files;
     private final Parser<T> parser;
+    private final long quietNanos;
     private final WatchedFile watched;
     private final CopyOnWriteArrayList<Consumer<T>> listeners = new CopyOnWriteArrayList<>();
 
@@ -51,6 +54,9 @@ public final class WatchedFileSource<T> implements Reloadable<T>, AutoCloseable 
 
     private volatile String lastFingerprint;
     private volatile T current;
+    /** Whether the last read found the files empty, and when they first were; see readAll(). */
+    private boolean empty;
+    private long emptySinceNanos;
 
     public WatchedFileSource(final List<Path> files,
                              final Duration pollInterval,
@@ -70,6 +76,7 @@ public final class WatchedFileSource<T> implements Reloadable<T>, AutoCloseable 
         this.observer = observer == null ? ReloadObserver.NONE : observer;
         this.files = List.copyOf(files);
         this.parser = parser;
+        this.quietNanos = pollInterval.toNanos();
         this.watched = new WatchedFile(this.files, pollInterval, this::onFilesChanged, this.observer);
         // Initial load = the WatchedFile's first check (sole reader): it loads the current
         // value and sets the change-detection baseline from the same read, so no change
@@ -105,15 +112,19 @@ public final class WatchedFileSource<T> implements Reloadable<T>, AutoCloseable 
         watched.close();
     }
 
-    /** WatchedFile onChange: read, gate on fingerprint then value, and publish if new. */
-    private synchronized void onFilesChanged() {
+    /**
+     * WatchedFile onChange: read, gate on fingerprint then value, and publish if new.
+     *
+     * @return false if nothing could be read yet, so the same change is offered again
+     */
+    private synchronized boolean onFilesChanged() {
         final List<byte[]> contents = readAll();
         if (contents == null) {
-            return; // a file was transiently unreadable (mid-write) -- retried on the next check
+            return false; // a file was caught mid-write -- retried on the next check
         }
         final String fingerprint = fingerprint(contents);
         if (fingerprint.equals(lastFingerprint)) {
-            return; // byte-identical content: nothing new (skip the re-parse)
+            return true; // byte-identical content: nothing new (skip the re-parse)
         }
         final T candidate;
         try {
@@ -124,29 +135,73 @@ public final class WatchedFileSource<T> implements Reloadable<T>, AutoCloseable 
                 throw new RuntimeException("Failed to parse initial content from " + files, e);
             }
             observer.reloadFailed(files.toString(), e);
-            return; // keep the last good value
+            return true; // read and rejected: consumed, and keep the last good value
         }
         lastFingerprint = fingerprint;
         if (candidate.equals(current)) {
-            return; // value gate: content changed but parses to the same value -- no publish
+            return true; // value gate: content changed but parses to the same value -- no publish
         }
         current = candidate; // atomic publish
         for (final Consumer<T> listener : listeners) {
             listener.accept(candidate);
         }
+        return true;
     }
 
-    /** Read every file's bytes; {@code null} if any is transiently unreadable. */
+    /**
+     * Read every file's bytes; {@code null} if any of them is not readable as a finished file yet.
+     *
+     * <p>A file being rewritten in place is readable long before it is complete: an in-progress
+     * write reads short, and between the truncate and the first byte it reads as nothing at all.
+     * Neither is a revision anybody wrote, and publishing one is not merely a transient wrong
+     * answer -- it becomes the last good value, so an edit that ends up not parsing leaves the
+     * process serving a half file forever. So each file is read between two agreeing readings of
+     * its (mtime, size), and the bytes must be as long as the size says.
+     *
+     * <p>That leaves the truncated-to-nothing case, which reads as a perfectly stable empty file for
+     * as long as the writer takes to get going. Nothing in the file can distinguish that from one an
+     * operator meant to empty, so the distinction is time: an empty read is accepted only once the
+     * files have been empty for a whole poll interval. A truncate-then-write is over in microseconds
+     * and never survives that; emptying a file for real costs one interval to take effect.
+     */
     private List<byte[]> readAll() {
         final List<byte[]> contents = new ArrayList<>(files.size());
+        long total = 0;
         for (final Path file : files) {
-            try {
-                contents.add(Files.readAllBytes(file));
-            } catch (final Exception e) {
+            final byte[] bytes = readStable(file);
+            if (bytes == null) {
                 return null;
             }
+            contents.add(bytes);
+            total += bytes.length;
         }
-        return contents;
+        if (total > 0 || current == null) {
+            empty = false;
+            return contents;
+        }
+        final long now = System.nanoTime();
+        if (!empty) {
+            empty = true;
+            emptySinceNanos = now;
+        }
+        return now - emptySinceNanos >= quietNanos ? contents : null;
+    }
+
+    /** A file's bytes, or {@code null} if it changed under the read (so the bytes are a fragment). */
+    private static byte[] readStable(final Path file) {
+        try {
+            final BasicFileAttributes before = Files.readAttributes(file, BasicFileAttributes.class);
+            final byte[] bytes = Files.readAllBytes(file);
+            final BasicFileAttributes after = Files.readAttributes(file, BasicFileAttributes.class);
+            if (before.size() != after.size()
+                    || !before.lastModifiedTime().equals(after.lastModifiedTime())
+                    || bytes.length != after.size()) {
+                return null;
+            }
+            return bytes;
+        } catch (final Exception e) {
+            return null; // missing, or unreadable for now
+        }
     }
 
     private static String fingerprint(final List<byte[]> contents) {

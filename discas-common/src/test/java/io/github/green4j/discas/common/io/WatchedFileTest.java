@@ -15,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -23,12 +24,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("WatchedFile -- signature gate over the shared FileWatchDaemon")
 class WatchedFileTest {
 
+    /** Counts fires and consumes every change, which is what an owner that could read does. */
+    private static WatchedFile.OnChange counting(final AtomicInteger count) {
+        return () -> {
+            count.incrementAndGet();
+            return true;
+        };
+    }
+
     @Test
     @DisplayName("First check fires (initial load); then only on change (checkNow)")
     void firstCheckLoadsThenFiresOnChange(@TempDir final Path dir) throws Exception {
         final Path f = Files.writeString(dir.resolve("f"), "a");
         final AtomicInteger count = new AtomicInteger();
-        final WatchedFile wf = new WatchedFile(List.of(f), Duration.ofSeconds(1), count::incrementAndGet);
+        final WatchedFile wf = new WatchedFile(List.of(f), Duration.ofSeconds(1), counting(count));
 
         wf.checkNow();
         assertEquals(1, count.get(), "First check fires (the initial load)");
@@ -51,7 +60,7 @@ class WatchedFileTest {
         final Path a = Files.writeString(dir.resolve("a"), "1");
         final Path b = Files.writeString(dir.resolve("b"), "2");
         final AtomicInteger count = new AtomicInteger();
-        final WatchedFile wf = new WatchedFile(List.of(a, b), Duration.ofSeconds(1), count::incrementAndGet);
+        final WatchedFile wf = new WatchedFile(List.of(a, b), Duration.ofSeconds(1), counting(count));
 
         wf.checkNow();
         assertEquals(1, count.get(), "First check fires (initial)");
@@ -67,7 +76,7 @@ class WatchedFileTest {
     void missingFileTolerated(@TempDir final Path dir) throws Exception {
         final Path f = dir.resolve("later");           // does not exist yet
         final AtomicInteger count = new AtomicInteger();
-        final WatchedFile wf = new WatchedFile(List.of(f), Duration.ofSeconds(1), count::incrementAndGet);
+        final WatchedFile wf = new WatchedFile(List.of(f), Duration.ofSeconds(1), counting(count));
 
         wf.checkNow();
         assertEquals(0, count.get(), "Missing file does not fire");
@@ -82,7 +91,7 @@ class WatchedFileTest {
     void daemonServicesRegistration(@TempDir final Path dir) throws Exception {
         final Path f = Files.writeString(dir.resolve("f"), "a");
         final AtomicInteger count = new AtomicInteger();
-        try (WatchedFile wf = new WatchedFile(List.of(f), Duration.ofMillis(50), count::incrementAndGet)) {
+        try (WatchedFile wf = new WatchedFile(List.of(f), Duration.ofMillis(50), counting(count))) {
             wf.checkNow();                 // consume the initial fire synchronously
             assertEquals(1, count.get(), "Initial load fired");
             wf.start();
@@ -101,12 +110,38 @@ class WatchedFileTest {
     }
 
     @Test
+    @DisplayName("A change the owner did not consume is offered again")
+    void unconsumedChangeIsReoffered(@TempDir final Path dir) throws Exception {
+        // The owner that returns false is the one that read a file mid-write. The baseline must not
+        // move past a state nobody took: the file is not going to change again just because we
+        // failed to read it, so a banked signature would mean nothing ever fires for it again.
+        final Path f = Files.writeString(dir.resolve("f"), "a");
+        final AtomicInteger count = new AtomicInteger();
+        final AtomicBoolean consume = new AtomicBoolean(false);
+        final WatchedFile wf = new WatchedFile(List.of(f), Duration.ofSeconds(1), () -> {
+            count.incrementAndGet();
+            return consume.get();
+        });
+
+        wf.checkNow();
+        assertEquals(1, count.get(), "First check fires");
+        wf.checkNow();
+        assertEquals(2, count.get(), "And fires again, the first one having refused the change");
+
+        consume.set(true);
+        wf.checkNow();
+        assertEquals(3, count.get(), "Still the same change, now taken");
+        wf.checkNow();
+        assertEquals(3, count.get(), "Taken means done: no fire without a further change");
+    }
+
+    @Test
     @DisplayName("All registrations share exactly one daemon thread")
     void singleDaemonThread(@TempDir final Path dir) throws Exception {
         final Path a = Files.writeString(dir.resolve("a"), "1");
         final Path b = Files.writeString(dir.resolve("b"), "2");
-        try (WatchedFile wa = new WatchedFile(List.of(a), Duration.ofSeconds(1), () -> { });
-                WatchedFile wb = new WatchedFile(List.of(b), Duration.ofSeconds(1), () -> { })) {
+        try (WatchedFile wa = new WatchedFile(List.of(a), Duration.ofSeconds(1), () -> true);
+                WatchedFile wb = new WatchedFile(List.of(b), Duration.ofSeconds(1), () -> true)) {
             wa.start();
             wb.start();
             final long threads = Thread.getAllStackTraces().keySet().stream()

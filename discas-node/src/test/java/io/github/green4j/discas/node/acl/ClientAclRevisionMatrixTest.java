@@ -83,21 +83,25 @@ class ClientAclRevisionMatrixTest {
     void everyEditAgainstBothRevisions(final String edit, final String before, final String after,
                                        final String untouchedAfter, @TempDir final Path dir)
             throws Exception {
-        final Path file = dir.resolve("acl.conf");
-        Files.writeString(file, startingPolicy(edit));
+        // Two nodes, each with the policy file on its own disk -- which is what a cluster is, and
+        // the whole of "mid-rollout": the edit has landed on one node and not yet on the other.
+        // (One file read by two loaders would not model it: both watch it, so the shared file-watch
+        // daemon reloads both the moment it changes, and on a platform whose WatchService is
+        // event-driven it does so before the next line of the test runs.)
+        final Path staleFile = Files.createDirectory(dir.resolve("stale")).resolve("acl.conf");
+        final Path freshFile = Files.createDirectory(dir.resolve("fresh")).resolve("acl.conf");
+        Files.writeString(staleFile, startingPolicy(edit));
+        Files.writeString(freshFile, startingPolicy(edit));
 
-        // Two nodes reading the same file, each with its own loader -- which is what a cluster is.
-        // Only one of them is told to reload, and that is the whole of "mid-rollout": the file is
-        // one thing, the revisions in force are two.
-        try (FileClientAcl staleAcl = new FileClientAcl(file);
-                FileClientAcl freshAcl = new FileClientAcl(file)) {
+        try (FileClientAcl staleAcl = new FileClientAcl(staleFile);
+                FileClientAcl freshAcl = new FileClientAcl(freshFile)) {
             final ClientAuthorizer stale = boundAuthorizer(staleAcl);
             final ClientAuthorizer fresh = boundAuthorizer(freshAcl);
 
             assertEquals(before.equals("ALLOWED"), stale.allow(WEB, ClientOp.PUT, key(SUBJECT)),
                     "Before the edit, " + edit);
 
-            rewrite(file, editedPolicy(edit));
+            rewrite(freshFile, editedPolicy(edit));
             freshAcl.reloadNow();
             awaitApplied(freshAcl, fresh);
 

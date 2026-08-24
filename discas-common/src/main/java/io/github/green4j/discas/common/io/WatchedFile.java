@@ -28,6 +28,12 @@ import java.util.Map;
  * a single reader with no gap: the first {@code onChange} is the "first update", and
  * every change after it is detected (no update can be missed after the first load).
  *
+ * <p>The baseline records the last state the owner <b>accepted</b>, not the last state seen: an
+ * {@code onChange} that returns {@code false} leaves it where it was and is offered the same
+ * change again on the next check. Without that, a file caught mid-write would be skipped once and
+ * then never re-offered -- its signature already banked -- and the owner would sit on the old value
+ * with nothing left to detect.
+ *
  * <p>{@link #start()} registers the check with the single shared daemon;
  * {@link #checkNow()} runs it synchronously on the caller's thread (for the initial
  * load / {@code reloadNow()} / tests); {@link #close()} detaches it.
@@ -37,9 +43,20 @@ public final class WatchedFile implements AutoCloseable {
     /** How often a hot-reloaded file is checked, unless its owner says otherwise. */
     public static final Duration DEFAULT_POLL_INTERVAL = Duration.ofSeconds(5);
 
+    /** What the owner does with a detected change. */
+    @FunctionalInterface
+    public interface OnChange {
+        /**
+         * @return {@code true} if the change was consumed -- including a reload the owner read and
+         *         rejected. {@code false} means it could not be read yet (a file mid-write), and
+         *         the same change is offered again on the next check.
+         */
+        boolean onChange();
+    }
+
     private final List<Path> files;
     private final Duration interval;
-    private final Runnable onChange;
+    private final OnChange onChange;
     private final ReloadObserver observer;
     private final Map<Path, long[]> signature = new HashMap<>(); // path -> [lastModifiedMs, size]
 
@@ -47,13 +64,13 @@ public final class WatchedFile implements AutoCloseable {
 
     public WatchedFile(final List<Path> files,
                        final Duration interval,
-                       final Runnable onChange) {
+                       final OnChange onChange) {
         this(files, interval, onChange, ReloadObserver.NONE);
     }
 
     public WatchedFile(final List<Path> files,
                        final Duration interval,
-                       final Runnable onChange,
+                       final OnChange onChange,
                        final ReloadObserver observer) {
         this.files = List.copyOf(files);
         this.interval = interval;
@@ -85,14 +102,18 @@ public final class WatchedFile implements AutoCloseable {
     }
 
     private synchronized void check() {
-        if (signatureChanged()) {
-            onChange.run();
+        final Map<Path, long[]> seen = changedSignatures();
+        if (seen != null && onChange.onChange()) {
+            signature.putAll(seen); // banked only once the owner has taken the change
         }
     }
 
-    /** Recompute signatures; update stored ones; return whether any file changed. */
-    private boolean signatureChanged() {
-        boolean changed = false;
+    /**
+     * The current signature of every file that differs from the baseline, or {@code null} if none
+     * does -- which is every check but the few that matter, so that one allocates nothing.
+     */
+    private Map<Path, long[]> changedSignatures() {
+        Map<Path, long[]> changed = null;
         for (final Path f : files) {
             final long[] cur = readSignature(f);
             if (cur == null) {
@@ -100,8 +121,10 @@ public final class WatchedFile implements AutoCloseable {
             }
             final long[] prev = signature.get(f);
             if (prev == null || prev[0] != cur[0] || prev[1] != cur[1]) {
-                signature.put(f, cur);
-                changed = true;
+                if (changed == null) {
+                    changed = new HashMap<>(files.size());
+                }
+                changed.put(f, cur);
             }
         }
         return changed;
