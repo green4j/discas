@@ -29,6 +29,19 @@ A **coordination store**: linearizable per-key compare-and-set, lease locks with
 prefix scan, and a coalescing watch -- the primitives distributed systems need in order to agree on
 small pieces of shared state.
 
+- **Distributed locks and leader election** -- critical sections, singleton guards, job or partition
+  claiming, with a fencing token to guard the protected resource.
+- **Configuration and feature flags** -- a value plus [`watch`](docs/user/03-scan-and-watch.md#watch),
+  so readers pick up changes without polling.
+- **Ownership and assignment registries** -- which instance currently holds a shard, a queue, a
+  device, a tenant.
+- **Counters, barriers, and state machines** -- anything a CAS loop expresses safely.
+- **Coordination between cooperating services** -- the case discas started from: services
+  orchestrating each other without operating a separate etcd/ZooKeeper/Consul cluster.
+
+Consumers reach it as a **Java library** -- embedded in the participating processes or as a plain
+client -- or over **HTTP/JSON** through [discas-agent](docs/agent/README.md).
+
 Where etcd and Consul use Raft and ZooKeeper uses ZAB -- one elected leader ordering every write into
 a replicated log -- discas uses **CASPaxos** ([Rystsov 2018](https://arxiv.org/abs/1802.07000)): any
 node can propose, state is a per-key *register* rather than a log, and replicas converge by periodic
@@ -51,19 +64,6 @@ locally, three orders of magnitude cheaper than a linearizable read across regio
 
 The price is quorum: every member votes, so a write pays two inter-region round trips and a
 linearizable read one, and there is no non-voting replica to place near distant readers.
-
-- **Distributed locks and leader election** -- critical sections, singleton guards, job or partition
-  claiming, with a fencing token to guard the protected resource.
-- **Configuration and feature flags** -- a value plus [`watch`](docs/user/03-scan-and-watch.md#watch),
-  so readers pick up changes without polling.
-- **Ownership and assignment registries** -- which instance currently holds a shard, a queue, a
-  device, a tenant.
-- **Counters, barriers, and state machines** -- anything a CAS loop expresses safely.
-- **Coordination between cooperating services** -- the case discas started from: services
-  orchestrating each other without operating a separate etcd/ZooKeeper/Consul cluster.
-
-Consumers reach it as a **Java library** -- embedded in the participating processes or as a plain
-client -- or over **HTTP/JSON** through [discas-agent](docs/agent/README.md).
 
 **Deployment.** The same node runs in two shapes. *Embedded* puts it inside the
 participating JVMs, and asks them to accept a fixed, identity-bound deployment shape in return.
