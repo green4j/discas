@@ -36,7 +36,7 @@ infrastructure and a poor one on an elastic platform.
 
 Two properties work in your favour either way. Member addresses are held **unresolved** and resolved
 fresh at every dial, so stable per-pod DNS names survive rescheduling even though the IP changes --
-and an address change can be hot-reloaded without dropping the cluster. And because the peer
+and an address change can be reloaded without dropping the cluster. And because the peer
 protocol is **plain TCP with no UDP**, nothing needs `hostNetwork` or exposed gossip ports, which is
 the step that most often complicates a Consul deployment on Kubernetes.
 

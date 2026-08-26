@@ -30,6 +30,14 @@ public class MemberInfo {
         return nodeId;
     }
 
+    /**
+     * Where this member is reached, for a reload report. The transport-agnostic base has nowhere to
+     * point at, so a transport that dials overrides it.
+     */
+    public String location() {
+        return "no address";
+    }
+
     @Override
     public boolean equals(final Object o) {
         if (this == o) {

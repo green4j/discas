@@ -92,8 +92,8 @@ discas reserves no well-known port numbers; every one below is something you cho
 |---|---|---|---|
 | Peer | `--peer-bind` | consensus, anti-entropy, handshakes | members only, all regions |
 | Client | `--client-bind` (**required**) | requests from clients and agents | your applications |
-| Observability | `--observability-bind`, default `127.0.0.1:9600` | `/metrics`, `/health`, `/ready` | **loopback** -- it exposes peer identities and topology |
-| Agent HTTP | `--http-bind` on `discas-agent` | `/v1/kv`, `/v1/lock`, `/v1/agent/health` | local callers |
+| Observability | `--observability-bind`, default `127.0.0.1:9600` | `/metrics`, `/health`, `/ready`, `/reload` | **loopback** -- it exposes peer identities and topology, and `/reload` is unauthenticated |
+| Agent HTTP | `--http-bind` on `discas-agent` | `/v1/kv`, `/v1/lock`, `/v1/agent/health`, `/v1/agent/reload` | local callers |
 | Agent observability | default `127.0.0.1:9601` | `/metrics` | loopback; 9601 so it does not collide with a node on the same host |
 
 The peer port and the client port are **separate trust domains** with their own CAs, stores and
@@ -109,7 +109,8 @@ authentication -- see [5. Access](05-access.md).
 | Key material | PKCS12 key and trust stores | `--tls-*`, `--client-tls-*` |
 
 A member's data directory is its identity -- it holds the `incarnation` marker -- and belongs to one
-`node_id` forever. Everything else in the table is configuration, and most of it is hot-reloaded.
+`node_id` forever. Everything else in the table is configuration, and most of it can be re-read
+without a restart ([7. Configuration](07-configuration.md#reload-vs-restart)).
 
 ## What discas does not do
 

@@ -7,22 +7,21 @@
 
 package io.github.green4j.discas.common.transport.tls;
 
-import io.github.green4j.discas.common.io.FileWatchDaemon;
+import io.github.green4j.discas.common.io.PeriodicDaemon;
 import io.github.green4j.discas.common.io.Reloadable;
 
 import java.security.cert.X509Certificate;
 import io.github.green4j.discas.common.io.ReloadObserver;
 
 import java.time.Duration;
-import java.util.List;
 import java.util.concurrent.Executor;
 
 /**
  * Applies rotated TLS material into a {@link ReloadableTlsContext} so the mesh is
  * never disrupted. It is the <b>consumer</b> of a {@link Reloadable} TLS-material source:
  * <ul>
- *   <li>The source (e.g. {@link FileTlsMaterialSource}) self-watches and <b>pushes</b>
- *       fresh material; this manager subscribes (replay-on-subscribe delivers the current
+ *   <li>The source (e.g. {@link FileTlsMaterialSource}) <b>pushes</b> fresh material when it is
+ *       reloaded; this manager subscribes (replay-on-subscribe delivers the current
  *       material immediately) and marshals each apply onto an {@link Executor} -- the
  *       node's event loop in production, so the swap is serialized with the
  *       {@code SSLEngine} handshakes that also run there.</li>
@@ -31,7 +30,7 @@ import java.util.concurrent.Executor;
  *   <li>Warns when the leaf is within {@link RenewalPolicy#warnBeforeExpiry()} of expiry
  *       and nothing new has arrived (a stalled issuer/renewal agent).</li>
  * </ul>
- * Owns no thread of its own: watching runs on the single {@link FileWatchDaemon} thread;
+ * Owns no thread of its own: the expiry warning runs on the single {@link PeriodicDaemon} thread;
  * application runs on the supplied {@code apply} executor.
  */
 public final class CertRotationManager implements AutoCloseable {
@@ -50,7 +49,7 @@ public final class CertRotationManager implements AutoCloseable {
     private volatile boolean closed;
     private volatile boolean warnedNearExpiry;
 
-    private FileWatchDaemon.Registration periodic; // near-expiry warning
+    private PeriodicDaemon.Registration periodic; // near-expiry warning
 
     public CertRotationManager(final ReloadableTlsContext context,
                                final Reloadable<TlsMaterial> source,
@@ -100,17 +99,18 @@ public final class CertRotationManager implements AutoCloseable {
     /**
      * Begin: subscribe to the source (replay-on-subscribe applies the current material).
      * A second call is a no-op -- without the guard it would add a second listener and a
-     * second daemon registration, doubling every reload and leaking the first timer.
+     * second timer registration, doubling every reload and leaking the first timer.
      */
     public synchronized void start() {
         if (started) {
             return;
         }
         started = true;
-        // Source pushes on the daemon; we marshal the apply onto the loop.
+        // The source pushes on whichever thread reloaded it; we marshal the apply onto the loop.
         source.addListener(m -> apply.execute(() -> applyMaterial(m)));
-        periodic = FileWatchDaemon.shared().register(
-                List.of(), policy.checkInterval(), this::maybeWarnNearExpiry, observer);
+        periodic = PeriodicDaemon.shared().register(
+                "cert-rotation: leaf certificate", policy.checkInterval(),
+                this::maybeWarnNearExpiry, observer);
     }
 
     private void applyMaterial(final TlsMaterial next) {

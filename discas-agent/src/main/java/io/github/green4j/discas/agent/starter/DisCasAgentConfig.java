@@ -71,11 +71,11 @@ public final class DisCasAgentConfig {
     public final ClientId clientId;
 
     // Target nodes this agent connects to (id -> host:port). Populated from either mode; in file
-    // mode this is the initial view, refreshed at runtime by DisCasAgent's watcher.
+    // mode this is the initial view, replaced whenever the agent is asked to reload.
     public final Map<NodeId, InetSocketAddress> nodes;
 
     // Membership: exactly one of the two modes is active.
-    public final Path nodesFile; // non-null => file mode (hot-reloaded at runtime)
+    public final Path nodesFile; // non-null => file mode (re-read on POST /v1/agent/reload)
 
     // Optional client authentication token sent to the nodes; null for AllowAll/mTLS.
     public final String token;
@@ -254,8 +254,9 @@ public final class DisCasAgentConfig {
                         "Target nodes id=host:port,id2=host:port,... "
                                 + "Mutually exclusive with --nodes-file.")).metavar("<list>")
                 .stringOpt("nodes-file", null, ConfigSupport.helpWithEnv("nodes-file",
-                        "Path to a hot-reloaded nodes file, node.<id>=host:port (same format as the "
-                                + "node's --members-file). Mutually exclusive with --nodes.")).metavar("<path>")
+                        "Path to a nodes file, node.<id>=host:port (same format as the node's "
+                                + "--members-file), re-read on POST /v1/agent/reload. Mutually "
+                                + "exclusive with --nodes.")).metavar("<path>")
                 .stringOpt("client-id", 'i', ConfigSupport.helpWithEnv("client-id",
                         "This agent's client id [default: " + DEFAULT_CLIENT_ID + "].")).metavar("<id>")
                 .stringOpt("token", null, ConfigSupport.helpWithEnv("token",
@@ -314,12 +315,12 @@ public final class DisCasAgentConfig {
                 .stringOpt("tls-truststore-password", null, ConfigSupport.helpWithEnv("tls-truststore-password",
                         "Trust store password [required with TLS].")).metavar("<secret>")
                 .stringOpt("tls-cert-rotation", null, ConfigSupport.helpWithEnv("tls-cert-rotation",
-                        "Hot-reload rotated client certificates [default: "
+                        "Swap in rotated client certificates on POST /v1/agent/reload [default: "
                                 + DEFAULT_TLS_CERT_ROTATION + "; mTLS only]."))
                 .metavar("<true|false>").choices("true", "false").optionalArg("true")
                 .epilogue("All options accept an equivalent DISCAS_* environment variable; the command line "
-                        + "wins over the environment. Provide the target nodes inline or in a hot-reloaded "
-                        + "file. Examples:\n"
+                        + "wins over the environment. Provide the target nodes inline or in a file that "
+                        + "POST /v1/agent/reload re-reads. Examples:\n"
                         + "  discas-agent --nodes 1=127.0.0.1:7001,2=127.0.0.1:7002,3=127.0.0.1:7003 \\\n"
                         + "    --http-bind 127.0.0.1:8500\n"
                         + "  discas-agent --nodes-file /etc/discas/nodes.conf --http-bind 127.0.0.1:8500");

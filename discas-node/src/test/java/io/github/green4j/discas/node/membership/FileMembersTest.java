@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@DisplayName("FileMembers -- parse, snapshot reload gates, safe publication")
+@DisplayName("FileMembers -- parse, reload gates, safe publication")
 class FileMembersTest {
 
     private static Path write(final Path dir, final String content) throws Exception {
@@ -59,7 +59,6 @@ class FileMembersTest {
             assertEquals(1, count.get(), "Subscribe replays the current snapshot");
             assertEquals(Set.of(NodeId.of("1"), NodeId.of("2")), notified.get().ids());
 
-            Thread.sleep(10L);
             Files.writeString(file, "node.2=host-2:9002\nnode.3=host-3:9003\n");
             members.reloadNow();
 
@@ -80,7 +79,6 @@ class FileMembersTest {
             members.addListener(snap -> count.incrementAndGet());
             assertEquals(1, count.get(), "Subscribe replays the current snapshot");
 
-            Thread.sleep(10L); // ensure the signature (mtime) changes so we reach the content gate
             Files.writeString(file, content);
             members.reloadNow();
 
@@ -94,7 +92,6 @@ class FileMembersTest {
     void reAddressReflected(@TempDir final Path dir) throws Exception {
         final Path file = write(dir, "node.1=host-1:9001\nnode.2=host-2:9002\n");
         try (FileMembers members = new FileMembers(file)) {
-            Thread.sleep(10L);
             Files.writeString(file, "node.1=host-1:9001\nnode.2=moved-host:9500\n");
             members.reloadNow();
 
@@ -113,7 +110,6 @@ class FileMembersTest {
             members.addListener(notified::set);
             assertEquals(Set.of(NodeId.of("1")), notified.get().ids(), "Subscribe replays current");
 
-            Thread.sleep(10L);
             Files.writeString(file, "this is not valid\n");
             members.reloadNow();
 
@@ -128,7 +124,6 @@ class FileMembersTest {
     void lateSubscriberGetsLatest(@TempDir final Path dir) throws Exception {
         final Path file = write(dir, "node.1=host-1:9001\nnode.2=host-2:9002\n");
         try (FileMembers members = new FileMembers(file)) {
-            Thread.sleep(10L);
             Files.writeString(file, "node.1=host-1:9001\nnode.3=host-3:9003\n");
             members.reloadNow(); // change happens BEFORE anyone subscribes
 
@@ -146,7 +141,6 @@ class FileMembersTest {
         try (FileMembers members = new FileMembers(file)) {
             final MembersSnapshot held = members.snapshot();
 
-            Thread.sleep(10L);
             Files.writeString(file, "node.1=host-1:9001\nnode.2=host-2:9002\n");
             members.reloadNow();
 

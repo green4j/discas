@@ -20,16 +20,28 @@ Exactly one of these two, never both:
 | | |
 |---|---|
 | `--nodes 1=host:port,2=host:port,...` | a fixed list |
-| `--nodes-file <path>` | `node.<id> = host:port` per line, **hot-reloaded** |
+| `--nodes-file <path>` | `node.<id> = host:port` per line, **re-read on request** |
 
-In file mode a change to the file is picked up without a restart. The client stack captures its peer
-set at construction, so a reload is applied by building a **new** client and swapping it in
-atomically: the next request uses the new list, and the retired client is shut down -- **failing
-whatever was in flight on it** rather than draining. Expect a burst of failures at the moment of a
-reload, and retry them the same way you would any other.
+In file mode you edit the file and then ask for it to be read, which needs no restart:
 
-A file whose contents are unchanged is a no-op, and one that fails to parse is ignored with the last
-good list left in force.
+```bash
+curl -s -X POST localhost:8500/v1/agent/reload
+```
+```json
+{"status":"applied","sources":[{"source":"/etc/discas/nodes.conf","outcome":"applied","detail":"3 nodes: 1=10.0.0.1:8001, 2=10.0.0.2:8001, 3=10.0.0.4:8001"}]}
+```
+
+Nothing reads the file until you make that call, so a half-saved edit cannot be picked up. The same
+call also re-reads the TLS material, and the two are applied together or not at all.
+
+The client stack captures its peer set at construction, so a reload is applied by building a **new**
+client and swapping it in atomically: the next request uses the new list, and the retired client is
+shut down -- **failing whatever was in flight on it** rather than draining. Expect a burst of
+failures at the moment of a reload, and retry them the same way you would any other.
+
+`200` means the set went in, `400` means it did not and the last good list is still in force. A file
+that parses to the list already running is reported `unchanged` and not re-applied -- which is why
+reordering the lines costs nothing. `GET` on this path is a `405`.
 
 `--client-id` (default `agent`) is the identity in the connection handshake, and what the nodes'
 authentication and per-prefix authorization key off. Give each agent its own.
@@ -75,8 +87,9 @@ Which mode applies is decided by the **nodes**; the agent supplies what that mod
       --client-id orders-agent
 ```
 
-Both stores are PKCS12. A truststore is required whenever `--tls` is on. Rotated client certificates
-are hot-reloaded by default (`--tls-cert-rotation`).
+Both stores are PKCS12. A truststore is required whenever `--tls` is on. With
+`--tls-cert-rotation` (default on), rotated client certificates are picked up by
+`POST /v1/agent/reload` instead of a restart.
 
 **Neither** -- plaintext, no credential. Works only if the nodes run permissive; anything else
 refuses the handshake and every request fails with [`403`](06-errors.md).
@@ -116,7 +129,7 @@ audiences and the exposition names every node this agent talks to.
 curl -s -X GET localhost:9601/metrics
 ```
 ```
-# HELP discas_reloads_total Background reloads that succeeded.
+# HELP discas_reloads_total Reloads that were applied.
 # TYPE discas_reloads_total counter
 discas_reloads_total 0
 ```

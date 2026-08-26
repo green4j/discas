@@ -40,7 +40,7 @@ problem.
 | A node started fine and nobody will talk to it | [3. Cluster -- membership states](03-cluster.md#membership-states). Check the handshake on the *peers* |
 | A member dropped out (`PEER_DOWN`) | [3. Cluster -- peer states](03-cluster.md#peer-states) |
 | Members flapping | `discas_node_peer_transitions_total{direction="down"}`; then [3. Cluster](03-cluster.md#how-to-check) |
-| A member-file edit was ignored | [3. Cluster -- what a reload does](03-cluster.md#what-a-reload-does). Add/remove changes `N` and is always refused |
+| A member-file edit had no effect | [3. Cluster -- what a reload does](03-cluster.md#what-a-reload-does). Nothing reads the file until you `POST /reload`; add/remove changes `N` and is always refused |
 | `CLUSTER_SIZE_MISMATCH` | [3. Cluster](03-cluster.md#membership-states). Never resize `N` to fix quorum |
 | `IDENTITY_MISMATCH` / `UNKNOWN_MEMBER` / `FOREIGN_CLUSTER` | [3. Cluster](03-cluster.md#membership-states) |
 | `VERSION_MISMATCH` after an upgrade | [10. Upgrades](10-upgrade.md#changing-the-version) |
@@ -75,10 +75,9 @@ problem.
 | Symptom | Go to |
 |---|---|
 | A client gets `ACCESS_DENIED` | [5. Access](05-access.md#troubleshooting) |
-| A token or ACL edit did nothing | [7. Configuration](07-configuration.md#reload-vs-restart); `RELOAD_FAILED` says the file is malformed |
-| `MATERIAL_EXPIRING` | [5. Access](05-access.md#rotating-a-ca). Rotation is hot |
+| A token or ACL edit did nothing | [7. Configuration](07-configuration.md#reload-vs-restart) -- start with whether `POST /reload` was called on that host, then read its reply |
+| `MATERIAL_EXPIRING` | [5. Access](05-access.md#rotating-a-ca). Rotation needs no restart |
 | A peer certificate expired | it presents as `PEER_DOWN` and `/ready` 503 -- [5. Access](05-access.md#troubleshooting) |
-| `RELOAD_NOT_WATCHED` | [5. Access](05-access.md#troubleshooting). Check the host's inotify limits |
 | An ACL is set but ignored | [5. Access](05-access.md) -- an ACL over `allowall` is advisory. Pair it with `token` or `mtls` |
 
 ### The agent

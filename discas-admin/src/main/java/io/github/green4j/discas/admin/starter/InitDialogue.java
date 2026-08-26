@@ -83,7 +83,7 @@ final class InitDialogue {
                     Prompt.choice(ClientAuth.ALLOWALL, "allowall",
                             "trusted network; a client's claimed id is believed"),
                     Prompt.choice(ClientAuth.TOKEN, "token",
-                            "a PBKDF2-hashed shared token per client id, hot-reloaded from a file"),
+                            "a PBKDF2-hashed shared token per client id, read from a file"),
                     Prompt.choice(ClientAuth.MTLS, "mtls",
                             "a client certificate; its CN is the id, and the client port runs TLS")),
                     0);

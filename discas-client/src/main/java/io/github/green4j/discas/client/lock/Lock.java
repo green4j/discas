@@ -30,6 +30,10 @@ public interface Lock {
      * {@link LockWriteStatus#APPLIED} means the CAS did not apply -- normally because this holder
      * was already displaced, in which case the lock now belongs to someone else and must not be
      * touched, and {@link LockWriteResult#observed()} says to whom.
+     * <p>
+     * The one exception is {@link LockWriteStatus#ALREADY_RELEASED}, which also wrote nothing but
+     * means the opposite: an earlier attempt of this same release had landed. Retrying a release
+     * whose answer was lost is therefore safe and tells you so.
      */
     CompletableFuture<LockWriteResult> release();
 
@@ -51,26 +55,24 @@ public interface Lock {
     LockToken token();
 
     /**
-     * How much of this lease is left, measured on the monotonic clock from when the lease was last
-     * requested -- so a step in the wall clock cannot lengthen or shorten it under its holder.
-     * <p>
-     * This is the reading to renew against. {@link #lockInfo()} carries the stored wall-clock
-     * deadline, which exists so <em>other</em> clients can judge the lease; it is the wrong clock
-     * for measuring how much time has passed here, and the right one for saying when the lease ends
-     * to someone else.
-     * <p>
-     * {@link Duration#ZERO} once it has run out. That is this holder's own opinion and not a
-     * cluster fact: a successor may already have taken the lock, which only {@link #validate()} or
-     * a fresh {@link #info()} can tell you.
+     * The name this lock stands under in the record. Worth asking of a lock that came from
+     * {@code recoverLock} or from another component, which the caller did not name itself.
      */
-    Duration remainingLease();
+    String ownerId();
 
     /**
-     * Local lock state. Exposes both the immutable acquire-time
-     * snapshot and the latest locally-known lease (updated on each
-     * successful {@link #renew(Duration)}).
+     * How much of this lease is left, measured on the monotonic clock from when the lease was last
+     * requested -- so a step in the wall clock cannot lengthen or shorten it under its holder. This
+     * is the reading to renew against, and the only one this object offers about time: the stored
+     * deadline is wall-clock, and it exists so <em>other</em> clients can judge the lease, not so
+     * its holder can measure how much of it has gone.
+     * <p>
+     * {@link Duration#ZERO} once it has run out. That is this holder's own opinion and not a
+     * cluster fact: a successor may already have taken the lock, which only a fresh
+     * {@link #info()} can tell you -- and even that answer is stale the moment it arrives, which is
+     * why {@link #fencingToken()} and not a check like it is what makes the work safe.
      */
-    LockInfoView lockInfo();
+    Duration remainingLease();
 
     /**
      * Monotonic per-key generation captured at acquire time. Use this as a
@@ -79,12 +81,4 @@ public interface Lock {
      * locally-still-thinks-it-holds-the-lock) holder can be rejected.
      */
     long fencingToken();
-
-    /**
-     * Returns true if the cluster's current generation for this lock key
-     * still matches {@link #fencingToken()}. A holder that was paused past its lease -- or whose
-     * lease was taken by a successor that read a stale cluster value as "expired" -- can use this
-     * to discover it has been displaced and abort safely.
-     */
-    CompletableFuture<Boolean> validate();
 }

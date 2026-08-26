@@ -78,7 +78,8 @@ final class ExampleOutcome<T> {
             final RequestFailedException.Cause why = ((RequestFailedException) cause).cause();
             // ALL_PEERS_EXHAUSTED means no request ever left the socket, which is determinate.
             // TIMED_OUT and SCAN_NO_QUORUM mean we stopped waiting on something that may still
-            // be in flight, which is not.
+            // be in flight, and INDETERMINATE is the client saying so outright: an unfenced write
+            // reached a coordinator that went quiet, and it declined to re-send it elsewhere.
             final boolean known = why == RequestFailedException.Cause.ALL_PEERS_EXHAUSTED;
             return new ExampleOutcome<>(null, ClientErrorCode.UNAVAILABLE, known, cause);
         }
@@ -104,9 +105,10 @@ final class ExampleOutcome<T> {
             case NO_QUORUM_AT_COORDINATOR: // refused before a round started
             case BALLOT_LOST:         // lost the duel at prepare; Accept never happened
             case PROPOSAL_EXPIRED:    // abandoned before the Accept broadcast
+            case INTERNAL:            // the node threw before it could start a round; anything
+                                      // thrown after one started is reported as UNAVAILABLE
                 return true;
             case UNAVAILABLE:         // the one genuinely indeterminate code
-            case INTERNAL:            // an exception on the node side, at an unknown phase
             default:
                 return false;
         }

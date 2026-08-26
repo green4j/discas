@@ -91,7 +91,7 @@ Before rolling a version that changes it:
 ### Changing configuration
 
 Most configuration changes do not need a restart at all -- see
-[7. Configuration](07-configuration.md#reload-vs-restart) for the four hot-reloaded sources. For
+[7. Configuration](07-configuration.md#reload-vs-restart) for the four reloadable sources. For
 those that do, the rolling procedure above applies unchanged, with one exception: **a change every
 member must agree on cannot be rolled.** `--cluster-size` is the clear case
 ([3. Cluster](03-cluster.md#changing-n)); turning `--tls` on or off is another, since a member with

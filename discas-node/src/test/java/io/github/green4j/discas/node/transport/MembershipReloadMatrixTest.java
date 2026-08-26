@@ -25,8 +25,6 @@ import org.junit.jupiter.params.provider.CsvSource;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileTime;
-import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -150,19 +148,8 @@ class MembershipReloadMatrixTest {
         }
     }
 
-    /**
-     * Write the file and make sure it looks changed.
-     * <p>
-     * The loader skips a file whose signature -- size and last-modified -- is what it was, so an
-     * edit that keeps the size and lands inside the same clock tick is invisible to it. Setting the
-     * timestamp forward says so deterministically, where sleeping for the filesystem's granularity
-     * would only make it likely.
-     */
     private static void rewrite(final Path file, final String contents) throws Exception {
-        final FileTime before = Files.getLastModifiedTime(file);
         Files.writeString(file, contents);
-        Files.setLastModifiedTime(file,
-                FileTime.fromMillis(before.toMillis() + Duration.ofSeconds(1).toMillis()));
     }
 
     private static String line(final NodeId id, final int port) {

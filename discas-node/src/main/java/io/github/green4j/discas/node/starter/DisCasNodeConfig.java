@@ -83,7 +83,7 @@ public final class DisCasNodeConfig {
 
     /**
      * Path to the members file ({@code --members-file}, {@code DISCAS_MEMBERS_FILE}), or
-     * {@code null} when the list came from {@code --members}. File mode is hot-reloaded at
+     * {@code null} when the list came from {@code --members}. File mode is re-read on demand at
      * runtime; the inline list is not. The two are mutually exclusive.
      */
     public final Path membersFile;
@@ -144,7 +144,7 @@ public final class DisCasNodeConfig {
     /** Password for {@link #tlsTruststore} ({@code --tls-truststore-password}); masked by {@link #describe()}. */
     public final char[] tlsTruststorePassword;
     /**
-     * Whether to watch the peer key material for renewal and swap it in without a restart
+     * Whether a reload may swap in renewed peer key material without a restart
      * ({@code --tls-cert-rotation}); default {@code true}.
      */
     public final boolean tlsCertRotation;
@@ -178,7 +178,7 @@ public final class DisCasNodeConfig {
     /** Password for {@link #clientTlsTruststore}; masked by {@link #describe()}. */
     final char[] clientTlsTruststorePassword;
     /**
-     * Whether to watch the client key material for renewal and swap it in without a restart
+     * Whether a reload may swap in renewed client key material without a restart
      * ({@code --client-tls-cert-rotation}); default {@code true}.
      */
     final boolean clientTlsCertRotation;
@@ -469,7 +469,7 @@ public final class DisCasNodeConfig {
                         "Cluster size / quorum basis [default: number of members].")).metavar("<n>")
                 .group("Membership")
                 .stringOpt("members-file", null, ConfigSupport.helpWithEnv("members-file",
-                        "Path to a hot-reloaded members file, node.<id>=host:port. "
+                        "Path to a members file, node.<id>=host:port, re-read on POST /reload. "
                                 + "Mutually exclusive with --members.")).metavar("<path>")
                 .stringOpt("members", null, ConfigSupport.helpWithEnv("members",
                         "Static members list id=host:port,id2=host:port. "
@@ -620,7 +620,7 @@ public final class DisCasNodeConfig {
                 .stringOpt("tls-truststore-password", null, ConfigSupport.helpWithEnv("tls-truststore-password",
                         "Trust store password [required with TLS].")).metavar("<secret>")
                 .stringOpt("tls-cert-rotation", null, ConfigSupport.helpWithEnv("tls-cert-rotation",
-                        "Hot-reload rotated certificates [default: "
+                        "Swap in rotated certificates on POST /reload, without a restart [default: "
                                 + DEFAULT_TLS_CERT_ROTATION + "]."))
                 .metavar("<true|false>").choices("true", "false").optionalArg("true")
                 .group("Security (client access)")
@@ -631,14 +631,14 @@ public final class DisCasNodeConfig {
                                 + DEFAULT_CLIENT_AUTH.cliName() + "]."))
                 .metavar("<mode>").choices("allowall", "token", "mtls")
                 .stringOpt("client-token-file", null, ConfigSupport.helpWithEnv("client-token-file",
-                        "Hot-reloaded token file, client.<id>=<pbkdf2 spec> [token auth: one of "
-                                + "this or --client-token-dir].")).metavar("<path>")
+                        "Token file, client.<id>=<pbkdf2 spec>, re-read on POST /reload [token "
+                                + "auth: one of this or --client-token-dir].")).metavar("<path>")
                 .stringOpt("client-token-dir", null, ConfigSupport.helpWithEnv("client-token-dir",
-                        "Hot-reloaded directory of <clientId>.token files [token auth: one of this "
-                                + "or --client-token-file].")).metavar("<path>")
+                        "Directory of <clientId>.token files, rescanned on POST /reload [token "
+                                + "auth: one of this or --client-token-file].")).metavar("<path>")
                 .stringOpt("client-acl-file", null, ConfigSupport.helpWithEnv("client-acl-file",
-                        "Hot-reloaded authorization file, acl.<id>=<prefix>:<OPS> ; ... . Without "
-                                + "it every authenticated client may access every key."))
+                        "Authorization file, acl.<id>=<prefix>:<OPS> ; ... , re-read on POST "
+                                + "/reload. Without it every authenticated client may access every key."))
                 .metavar("<path>")
                 .stringOpt("client-tls", null, ConfigSupport.helpWithEnv("client-tls",
                         "Enable TLS on the client port [default: " + DEFAULT_CLIENT_TLS + "; implied by "
@@ -660,7 +660,7 @@ public final class DisCasNodeConfig {
                 .metavar("<secret>")
                 .stringOpt("client-tls-cert-rotation", null,
                         ConfigSupport.helpWithEnv("client-tls-cert-rotation",
-                                "Hot-reload rotated client-port certificates [default: "
+                                "Swap in rotated client-port certificates on POST /reload [default: "
                                         + DEFAULT_CLIENT_TLS_CERT_ROTATION + "]."))
                 .metavar("<true|false>").choices("true", "false").optionalArg("true")
                 .epilogue("All options accept an equivalent DISCAS_* environment variable; the command line "

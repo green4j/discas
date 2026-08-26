@@ -23,7 +23,6 @@ import io.github.green4j.discas.client.GetResult;
 import io.github.green4j.discas.client.WatchResult;
 import io.github.green4j.discas.client.lock.Lock;
 import io.github.green4j.discas.client.lock.LockAcquireResult;
-import io.github.green4j.discas.client.lock.LockInfoStatus;
 import io.github.green4j.discas.client.lock.LockWriteResult;
 import io.github.green4j.discas.client.transport.InProcessClientBootstrap;
 import io.github.green4j.discas.client.transport.TcpClientBootstrap;
@@ -264,11 +263,13 @@ public final class UserDocSnippets {
     // ---- 04: locks -------------------------------------------------------------------------------
 
     static void takingALock(final DisCasClient client) {
-        final LockAcquireResult r = client.tryLock("jobs/nightly", Duration.ofSeconds(30)).join();
+        final LockAcquireResult r =
+                client.tryLock("jobs/nightly", Duration.ofSeconds(30), "worker-3").join();
 
         final LockAcquireResult w = client.lock("jobs/nightly",
                 Duration.ofSeconds(30),
-                Duration.ofSeconds(5)).join();
+                Duration.ofSeconds(5),
+                "worker-3").join();
 
         if (r.acquired()) {
             final Lock lock = r.lock();
@@ -278,8 +279,6 @@ public final class UserDocSnippets {
                 lock.release().join();
             }
         }
-
-        client.tryLock("jobs/nightly", Duration.ofSeconds(30), "worker-3");
     }
 
     static void holdingALock(final Lock lock) {
@@ -291,18 +290,24 @@ public final class UserDocSnippets {
             return;
         }
 
-        lock.validate().join();
         lock.info().join();
-        lock.lockInfo();
     }
 
-    static void lockRecovery(final DisCasClient client, final String myOwnerId) {
-        client.getLockInfo("jobs/nightly").thenAccept(info -> {
-            if (info.status() == LockInfoStatus.LOCKED
-                    && myOwnerId.equals(info.info().ownerId())) {
-                // it is mine after all
-            }
-        });
+    static void lockRecovery(final DisCasClient client) {
+        final LockAcquireResult r = client.recoverLock("jobs/nightly", "worker-3").join();
+
+        switch (r.status()) {
+            case ACQUIRED:
+                r.lock();       // it landed -- same token, same generation
+                break;
+            case NOT_HELD:
+                // it did not land; nothing was written, so the acquire is safe to issue again
+                client.tryLock("jobs/nightly", Duration.ofSeconds(30), "worker-3");
+                break;
+            default:
+                r.observed();   // somebody else got there
+                break;
+        }
     }
 
     // ---- 05: client setup --------------------------------------------------------------------------
@@ -453,7 +458,8 @@ public final class UserDocSnippets {
             throws IOException {
         final ObservabilityServer observability = ObservabilityServer.start(
                 ObservabilityConfig.builder().bindAddress("127.0.0.1").port(9600).build(),
-                NodeEndpoints.router(nodeId, node.healthSource(), peerState, metrics));
+                NodeEndpoints.router(nodeId, node.healthSource(), peerState, metrics,
+                        node::reloadFiles));
 
         node.addLifecycleCloseable(observability);
     }
@@ -474,7 +480,7 @@ public final class UserDocSnippets {
         node.addLifecycleCloseable(clientServer);
     }
 
-    static ReloadObserver hotReload(final DisCasNode node, final MetricRegistry metrics,
+    static ReloadObserver reloadableFiles(final DisCasNode node, final MetricRegistry metrics,
                                     final Log log, final OperatorAttention attention,
                                     final Path membersFile) {
         final ReloadObserver reload = new MetricsReloadObserver(metrics,

@@ -26,18 +26,18 @@ public class StderrReloadObserver implements ReloadObserver {
     }
 
     @Override
+    public void reloadUnchanged(final String source, final String detail) {
+        System.err.println("Unchanged " + source + ": " + detail);
+    }
+
+    @Override
     public void reloadFailed(final String source, final Throwable error) {
         System.err.println("Ignoring failed reload of " + source + ": " + error.getMessage());
     }
 
     @Override
-    public void watchUnavailable(final String source, final Throwable error) {
-        System.err.println("File-watch: cannot watch " + source + ": " + error.getMessage());
-    }
-
-    @Override
     public void checkFailed(final String source, final Throwable error) {
-        System.err.println("File-watch: check failed for " + source + ": " + error);
+        System.err.println("Check failed for " + source + ": " + error);
     }
 
     @Override

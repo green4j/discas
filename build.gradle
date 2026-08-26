@@ -604,6 +604,8 @@ configure(exampleProject) {
             'QuickstartExample'         : 'every KV operation once, each outcome required to be applied',
             'ContentionExample'         : 'two clients on one key: no lost update',
             'CoordinatorFailoverExample': 'a node killed mid-flight: the failover table holds',
+            'FencingExample'            : 'a displaced holder writes: the guarded resource refuses it',
+            'KeepAliveExample'          : 'a renew loop beside the work, and the work stopping when it fails',
     ]
 
     def exampleTasks = assertingExamples.collect { className, what ->

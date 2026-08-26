@@ -8,8 +8,11 @@
 package io.github.green4j.discas.client.lock;
 
 /**
- * The outcome of an acquire attempt: a {@link LockAcquireStatus} and, where there is one, the
- * lock that was taken or the {@link LockInfo} describing who holds it instead.
+ * The outcome of an acquire attempt: a {@link LockAcquireStatus} and exactly one of the two things
+ * an attempt can end with -- the lock that was taken, or the record that stood in the way.
+ * <p>
+ * Never both. On success the lock is the whole answer and anything it already tells you is not
+ * repeated here; on a refusal there is no lock and {@link #observed()} says what was found instead.
  * <p>
  * Contention is reported here rather than thrown, because losing a race for a lock is a normal
  * result; only an inability to reach the cluster fails the future. Named factories rather than a
@@ -17,25 +20,41 @@ package io.github.green4j.discas.client.lock;
  */
 public final class LockAcquireResult {
     private final LockAcquireStatus status;
-    private final DistributedLock lock;
-    private final LockInfo lockInfo;
+    private final Lock lock;
+    private final LockInfo observed;
 
     private LockAcquireResult(final LockAcquireStatus status,
-                              final DistributedLock lock,
-                              final LockInfo lockInfo) {
+                              final Lock lock,
+                              final LockInfo observed) {
         this.status = status;
         this.lock = lock;
-        this.lockInfo = lockInfo;
+        this.observed = observed;
     }
 
-    /** The lock was taken; {@code lockInfo} is its acquire-time snapshot. */
-    public static LockAcquireResult acquired(final DistributedLock lock) {
-        return new LockAcquireResult(LockAcquireStatus.ACQUIRED, lock, lock.lockInfo().snapshot());
+    /** The lock was taken. */
+    public static LockAcquireResult acquired(final Lock lock) {
+        return new LockAcquireResult(LockAcquireStatus.ACQUIRED, lock, null);
     }
 
-    /** Another holder has a live lease; {@code lockInfo} says who and until when. */
-    public static LockAcquireResult heldByOther(final LockInfo lockInfo) {
-        return new LockAcquireResult(LockAcquireStatus.HELD_BY_OTHER, null, lockInfo);
+    /** Another holder has a live lease; {@code observed} says who and until when. */
+    public static LockAcquireResult heldByOther(final LockInfo observed) {
+        return new LockAcquireResult(LockAcquireStatus.HELD_BY_OTHER, null, observed);
+    }
+
+    /**
+     * A live lease already stands in the caller's own name. Deliberately carries no {@link Lock}:
+     * an acquire that finds the key already its own has taken nothing, and handing one back here
+     * would silently grant mutual exclusion to a second caller that merely shares an owner id.
+     * {@code recoverLock} is the operation that turns this record into a usable lock, and asking
+     * for it is the caller stating that the id really is theirs.
+     */
+    public static LockAcquireResult heldBySelf(final LockInfo observed) {
+        return new LockAcquireResult(LockAcquireStatus.HELD_BY_SELF, null, observed);
+    }
+
+    /** Nothing holds the key, so a recovery found nothing of the caller's to hand back. */
+    public static LockAcquireResult notHeld() {
+        return new LockAcquireResult(LockAcquireStatus.NOT_HELD, null, null);
     }
 
     /** The key holds a non-lock value, so nothing was written and there is nothing to describe. */
@@ -43,9 +62,9 @@ public final class LockAcquireResult {
         return new LockAcquireResult(LockAcquireStatus.NOT_LOCK_RECORD, null, null);
     }
 
-    /** The wait budget ran out; {@code lockInfo} is the last holder seen while waiting. */
-    public static LockAcquireResult timedOut(final LockInfo lockInfo) {
-        return new LockAcquireResult(LockAcquireStatus.TIMED_OUT, null, lockInfo);
+    /** The wait budget ran out; {@code observed} is the last holder seen while waiting. */
+    public static LockAcquireResult timedOut(final LockInfo observed) {
+        return new LockAcquireResult(LockAcquireStatus.TIMED_OUT, null, observed);
     }
 
     /** Why the attempt ended. */
@@ -59,21 +78,20 @@ public final class LockAcquireResult {
     }
 
     /** The acquired lock, or {@code null} unless {@link #acquired()}. */
-    public DistributedLock lock() {
+    public Lock lock() {
         return lock;
     }
 
-    /** The acquired lock's holder token, or {@code null} unless {@link #acquired()}. */
-    public LockToken token() {
-        return lock != null ? lock.token() : null;
-    }
-
     /**
-     * On success the acquire-time snapshot of the lock just taken; on
-     * {@link LockAcquireStatus#HELD_BY_OTHER} or {@link LockAcquireStatus#TIMED_OUT} the state of
-     * the holder that blocked it; {@code null} for {@link LockAcquireStatus#NOT_LOCK_RECORD}.
+     * The record that stood in the way, and {@code null} when none did -- on
+     * {@link LockAcquireStatus#ACQUIRED}, where the lock itself is the answer, and on
+     * {@link LockAcquireStatus#NOT_HELD} and {@link LockAcquireStatus#NOT_LOCK_RECORD}, where
+     * there was no lock record to report.
+     * <p>
+     * Named as in {@link LockWriteResult#observed()}, and for the same reason: a refused operation
+     * says what it saw, so the caller learns who it lost to without a second round trip.
      */
-    public LockInfo lockInfo() {
-        return lockInfo;
+    public LockInfo observed() {
+        return observed;
     }
 }

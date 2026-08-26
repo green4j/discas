@@ -207,30 +207,22 @@ public enum OperatorState {
                     + "--client-token-file/--client-token-dir and --client-acl-file."),
 
     /**
-     * A hot-reloaded file did not parse; the last good version stays in force. Not transient -- a
-     * file caught mid-write is retried silently, so reaching here means what is on disk is malformed
-     * and will stay malformed until somebody edits it.
+     * A reload was refused because the file did not parse; the last good version stays in force.
+     * Not transient -- a file caught mid-write is reported as unreadable instead, so reaching here
+     * means what is on disk is malformed and will stay malformed until somebody edits it. Nothing
+     * else in that reload was applied either: a reload is all of the files or none of them.
      */
     RELOAD_FAILED(OperatorGroup.CONFIG,
-            "Fix the file. It does not parse, so the process is running on the last version it "
-                    + "accepted and what is on disk is no longer what is in force."),
-
-    /**
-     * The filesystem watch on a hot-reloaded file is gone and the safety poll is carrying it. Still
-     * working, and slower: an edit now takes up to a poll interval to be seen instead of arriving as
-     * an event.
-     */
-    RELOAD_NOT_WATCHED(OperatorGroup.CONFIG,
-            "Check the host's filesystem watch limits (inotify on Linux). Reloads still happen on "
-                    + "the safety poll, so nothing is broken -- an edit simply takes up to a poll "
-                    + "interval to take effect instead of arriving as an event."),
+            "Fix the file and reload again. It does not parse, so nothing in that reload was "
+                    + "applied: the process is running on the last version it accepted and what is "
+                    + "on disk is no longer what is in force."),
 
     /** Loaded TLS material is approaching its expiry. */
     MATERIAL_EXPIRING(OperatorGroup.CONFIG,
             "Rotate this material before it expires; discas_reload_material_expires_seconds counts "
-                    + "down. Writing the new files over --tls-keystore/--tls-truststore is enough, "
-                    + "hot reload picks them up with no restart. Once it has expired the handshakes "
-                    + "it protects begin to fail and members drop out of the quorum."),
+                    + "down. Write the new files over --tls-keystore/--tls-truststore and reload, "
+                    + "which swaps them in with no restart. Once it has expired the handshakes it "
+                    + "protects begin to fail and members drop out of the quorum."),
 
 
     /**

@@ -27,9 +27,6 @@ public final class LockValueCodec {
     /** Layout version; a record written under a different one decodes to {@code null}. */
     public static final short VERSION = 1;
 
-    private static final ByteBuffer EMPTY_TOKEN =
-            ByteBuffer.allocate(0).asReadOnlyBuffer();
-
     private LockValueCodec() {
     }
 
@@ -110,12 +107,15 @@ public final class LockValueCodec {
             this.generation = generation;
         }
 
-        /** The holder's client id; empty on a released marker. */
+        /** The holder's owner id; on a release marker, whose lock the key last was. */
         public String ownerId() {
             return ownerId;
         }
 
-        /** A read-only duplicate of the holder token; empty on a released marker. */
+        /**
+         * A read-only duplicate of the holder token; on a release marker, the token of the holder
+         * that released it. Empty only on a marker written before those were carried.
+         */
         public ByteBuffer token() {
             return token.duplicate();
         }
@@ -140,14 +140,30 @@ public final class LockValueCodec {
          * release/re-acquire cycles so fencing tokens stay strictly monotonic
          * cluster-wide. {@link io.github.green4j.discas.client.DisCasClient#release} writes one
          * of these instead of deleting the record outright.
+         * <p>
+         * A zero lease is the whole test. An acquire stores {@code now + ttl} on a corrected
+         * wall clock with a strictly positive ttl, so it cannot land on zero, and reading only
+         * this field leaves the others free to say who the release was. Markers written before
+         * that were carried are blank in those fields but still zero here, so they read the same.
          */
         public boolean isReleased() {
-            return leaseUntilEpochMs == 0L && ownerId.isEmpty() && token.remaining() == 0;
+            return leaseUntilEpochMs == 0L;
         }
 
-        /** The marker written on release: no owner, no token, no lease -- only the generation. */
-        public static LockRecord releasedMarker(final long generation) {
-            return new LockRecord("", EMPTY_TOKEN, 0L, 0L, generation);
+        /**
+         * The marker written when {@code held} is released: the same owner, token, acquire time
+         * and generation, with the lease zeroed.
+         * <p>
+         * Erasing the holder was the obvious thing to do and the wrong one. A release whose
+         * response is lost gets retried, and a marker that has forgotten who wrote it can only
+         * answer "no lock here" -- which is also the answer when the key was never locked, and
+         * when a successor took over and cleaned up after you. Keeping the token lets the retry
+         * be told that its own release landed; keeping the owner lets a reader say whose lock
+         * this key last was.
+         */
+        public static LockRecord releasedMarker(final LockRecord held) {
+            return new LockRecord(held.ownerId(), held.token(), held.acquiredAtEpochMs(),
+                    0L, held.generation());
         }
     }
 }

@@ -10,6 +10,8 @@ package io.github.green4j.discas.node;
 import io.github.green4j.discas.common.Ballot;
 import io.github.green4j.discas.common.EventLoop;
 import io.github.green4j.discas.common.io.Closeables;
+import io.github.green4j.discas.common.io.ReloadableFiles;
+import io.github.green4j.discas.common.io.ReloadReport;
 import io.github.green4j.discas.common.identity.NodeId;
 import io.github.green4j.discas.node.wal.Wal;
 
@@ -595,6 +597,24 @@ public final class DisCasNode implements AutoCloseable {
      */
     public int clusterSize() {
         return peerTransport.clusterSize();
+    }
+
+    /**
+     * Re-read every file this process is serving -- members, ACL, client tokens, TLS material --
+     * and apply the result, all of it or none of it. The returned report says what each source did,
+     * and is the answer to "is what I just wrote now in force".
+     * <p>
+     * Nothing reads those files unless this is called, which is what makes them safe to edit in
+     * place: no half-saved ACL can be read as a revision, because between one call and the next
+     * nobody is reading. And because a refusal anywhere stops the whole reload, a certificate and
+     * its key -- or a members list and the ACL that names it -- change together or not at all.
+     * <p>
+     * Runs on the calling thread, and publishes on it: consumers inside the node marshal onto the
+     * event loop themselves. Safe to call before {@link #start()} and after {@link #close()}; what
+     * it covers is whatever the process still holds open.
+     */
+    public ReloadReport reloadFiles() {
+        return ReloadableFiles.shared().reloadAll();
     }
 
     /**

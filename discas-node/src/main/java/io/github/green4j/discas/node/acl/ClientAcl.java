@@ -10,9 +10,9 @@ package io.github.green4j.discas.node.acl;
 import io.github.green4j.discas.common.io.Reloadable;
 
 /**
- * A hot-reloadable source of the client authorization table. One {@link Reloadable} contract --
- * snapshot plus replay-on-subscribe -- serves both a static in-memory source and a watched file
- * source, so ACL edits are picked up with no restart.
+ * A reloadable source of the client authorization table. One {@link Reloadable} contract --
+ * snapshot plus replay-on-subscribe -- serves both a static in-memory source and a file source, so
+ * an ACL edit takes effect on the next reload, with no restart.
  */
 public interface ClientAcl extends Reloadable<ClientAclSnapshot> {
 }

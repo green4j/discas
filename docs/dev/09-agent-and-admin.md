@@ -26,6 +26,7 @@ Routes, all prefix-dispatched:
 | `/v1/kv/...` | `GET` (`?raw`, `?keys`, `?version=` blocking query), `PUT` (`?cas=<version>`), `DELETE` (`?cas=`) |
 | `/v1/lock/...` | acquire (`?ttl=`, `?wait=`), renew, release, info -- token in `X-DisCas-Lock-Token` |
 | `/v1/agent/health` | liveness plus the nodes this agent currently targets |
+| `/v1/agent/reload` | `POST` only -- re-read the nodes file and TLS material, `200` applied / `400` refused |
 
 A key's version travels as `X-DisCas-Version` and is what a blocking query passes back as
 `?version=` and a fenced write passes as `?cas=`. It plays Consul's `X-Consul-Index` role but is
@@ -52,9 +53,11 @@ to derive:
 where that code runs. Over HTTP the loop is the caller's, built from a read and a `?cas=` write --
 which is why every read hands back a version.
 
-The node list hot-reloads. Since a client captures its peer set at construction, a membership change
-is applied by building a **new** `DisCasClient` and swapping it in atomically
-(`ReloadableClient`), retiring the old one off-thread.
+The node list is re-read on `POST /v1/agent/reload` and at no other time. Since a client captures its
+peer set at construction, a membership change is applied by building a **new** `DisCasClient` and
+swapping it in atomically (`ReloadableClient`), retiring the old one off-thread. The publish happens
+on the HTTP worker that served the reload, so the swap is complete before the response is written and
+the reply describes state that is already in force.
 
 The HTTP server itself is documented in its own class javadoc, which is a full manual -- see the
 class-level javadoc of

@@ -10,11 +10,18 @@ package io.github.green4j.discas.client.lock;
 import java.nio.ByteBuffer;
 
 /**
- * The random per-acquire secret that identifies one holder of a lock.
+ * The random per-acquire mark that distinguishes one holder of a lock from the next.
  * <p>
- * Release and renew are CASes conditioned on this token, so it -- not the client id -- is what
- * separates the current holder from a previous one: two successive holders of the same key from
- * the same client still get different tokens, and the displaced holder's operations fail.
+ * Release and renew are CASes conditioned on this token, so it -- not the owner id -- is what
+ * separates the current holder from a previous one: two successive holders of the same key get
+ * different tokens even under the same name, and the displaced one's operations fail against the
+ * record its successor wrote.
+ * <p>
+ * That is the whole of what it protects against. It is not a secret: the token sits in the clear
+ * inside the lock record, so whoever may read the key may read it. Keeping the key out of the
+ * wrong hands is the ACL's job, not the token's. DisCas does not go out of its way to spread one
+ * either -- a reading of a lock never carries the holder's token, and a holder that lost its own
+ * asks for it back by name through {@code recoverLock}.
  * <p>
  * Value type with by-content {@code equals}. The bytes are copied on construction and exposed
  * only as read-only duplicates, so a caller cannot mutate a token after handing it over.

@@ -66,6 +66,11 @@ public final class TcpMemberInfo extends MemberInfo {
         return host;
     }
 
+    @Override
+    public String location() {
+        return host + ":" + port;
+    }
+
     public int port() {
         return port;
     }

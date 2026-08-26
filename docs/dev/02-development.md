@@ -103,7 +103,9 @@ java -cp "$CP" io.github.green4j.discas.example.QuickstartExample
 ```
 
 Others worth knowing: `ContentionExample` (two clients on one key), `CoordinatorFailoverExample`
-(kills a node mid-flight and asserts the failover table), `WatchExample` (a burst of commits against
+(kills a node mid-flight and asserts the failover table), `FencingExample` (a displaced holder
+writing to a guarded and an unguarded resource, side by side), `KeepAliveExample` (a renew loop
+beside the work, and the same loop misconfigured), `WatchExample` (a burst of commits against
 the number of times a watcher wakes), `LockExample`, `SecureClientAclExample`
 (token auth plus a prefix ACL) and `SecureClusterFileMembersExample` (peer mTLS through a CA
 rotation) -- the last provisions a demo PKI with `keytool`, which must be on `PATH`.

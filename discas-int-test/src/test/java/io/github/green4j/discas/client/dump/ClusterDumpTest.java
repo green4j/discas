@@ -85,7 +85,7 @@ class ClusterDumpTest {
         // the whole of the operator's control over whether locks are carried.
         final DisCasClient client = startCluster();
         put(client, "users/1", "alice");
-        final LockAcquireResult lock = await(client.tryLock("locks/nightly", Duration.ofMinutes(5)));
+        final LockAcquireResult lock = await(client.tryLock("locks/nightly", Duration.ofMinutes(5), "dump-test"));
         assertTrue(lock.acquired());
 
         final DumpSummary everything = dump(client, Collections.emptyList(), "all.dump");

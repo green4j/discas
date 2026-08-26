@@ -88,7 +88,7 @@ public final class SecureClientAclExample {
                 new TcpPeerBootstrap(peerAddr, InMemoryMembers.ofTcp(Map.of(NODE, peerAddr)), peerConfig),
                 wal);
 
-        // Authentication: token store (hot-reloaded from disk); Authorization: file ACL.
+        // Authentication: token store (re-read on request); Authorization: file ACL.
         try (FileClientTokenStore tokens = new FileClientTokenStore(tokenFile);
                 FileClientAcl acl = new FileClientAcl(aclFile)) {
 

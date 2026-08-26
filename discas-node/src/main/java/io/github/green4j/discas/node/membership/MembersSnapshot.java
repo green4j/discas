@@ -9,8 +9,10 @@ package io.github.green4j.discas.node.membership;
 
 import io.github.green4j.discas.common.identity.NodeId;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -48,6 +50,29 @@ public final class MembersSnapshot<M extends MemberInfo> {
 
     public boolean contains(final NodeId nodeId) {
         return byId.containsKey(nodeId);
+    }
+
+    /**
+     * One line for the reload report: every member and where it is. Sorted by id, because the map's
+     * own order comes from {@code Properties} and has none, and a report an operator cannot compare
+     * with the last one tells them nothing.
+     *
+     * <p>Addresses are cluster topology, not a secret -- and they are the whole point of reading
+     * the report: a members file that applied with the wrong port is indistinguishable from one
+     * that applied correctly until the node fails to reach a peer.
+     */
+    public String summary() {
+        final List<NodeId> ids = new ArrayList<>(byId.keySet());
+        Collections.sort(ids);
+        final StringBuilder sb = new StringBuilder();
+        sb.append(ids.size()).append(ids.size() == 1 ? " node: " : " nodes: ");
+        for (int i = 0; i < ids.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(ids.get(i).value()).append('=').append(byId.get(ids.get(i)).location());
+        }
+        return sb.toString();
     }
 
     @Override

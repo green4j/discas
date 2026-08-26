@@ -203,8 +203,8 @@ the file, and the secret still reaches your terminal instead of scrolling into a
 discas-admin token -c reporter >> /etc/discas/tokens.conf
 ```
 
-For the directory form, write it as `<clientId>.token` under `--client-token-dir` instead. Both are
-hot-reloaded, so a node picks up a new client without a restart.
+For the directory form, write it as `<clientId>.token` under `--client-token-dir` instead. Either
+way, `POST /reload` on each node picks the new client up without a restart.
 
 **The token is shown once and kept nowhere.** There is no command to recover it, by construction:
 what the cluster stores is a hash, which is the point of storing a hash. A lost token is re-issued.
@@ -216,9 +216,9 @@ what the cluster stores is a hash, which is the point of storing a hash. A lost 
 | `--token` | use this secret instead of generating one, for a token that comes from a secret manager |
 | `--iterations` | the PBKDF2 work factor. Carried in the record, so raising it applies to new tokens without invalidating old ones. **Cannot be set below the default** -- the only honest direction for it is up |
 
-Rotation is two records on one line: mint a second, append it after ` ; `, let the clients move, then
-drop the first or let its expiry retire it ([5. Access](05-access.md#rotating-a-token)). Revocation
-is deleting the record.
+Rotation is two records on one line: mint a second, append it after ` ; `, reload, let the clients
+move, then drop the first or let its expiry retire it
+([5. Access](05-access.md#rotating-a-token)). Revocation is deleting the record and reloading.
 
 ---
 

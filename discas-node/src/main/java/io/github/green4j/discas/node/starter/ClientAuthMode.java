@@ -27,7 +27,7 @@ public enum ClientAuthMode {
     ALLOWALL,
 
     /**
-     * Require a shared token, verified against a PBKDF2 hash from a hot-reloaded token store
+     * Require a shared token, verified against a PBKDF2 hash from a reloadable token store
      * ({@code --client-token-file} or {@code --client-token-dir}). Combine with
      * {@code --client-tls} so the token is not sent in the clear.
      */

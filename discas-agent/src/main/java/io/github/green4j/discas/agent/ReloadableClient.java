@@ -29,18 +29,18 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * A hot-swappable holder around a {@link DisCasClient}. The agent's HTTP handlers read {@link #current()}
- * once per request; the agent's nodes-file watcher calls {@link #onNodesReloaded} whenever the target-node
- * list changes.
+ * once per request; the agent's nodes-file source calls {@link #onNodesReloaded} whenever a reload changes
+ * the target-node list.
  *
  * <p>Unlike the node's peer transport (which takes a live membership source), the client stack captures
  * its peer set once at construction ({@code DisCasClient.peers} drives routing, scan fan-out and retry
  * math). So a membership change is applied by building a <b>new</b> {@link DisCasClient} for the new node
  * map and atomically swapping it in; the outgoing client is shut down off-thread (its {@code shutdown()}
- * blocks on event-loop termination, which must not stall the file-watch thread). The {@link ClientSecurityProvider}
+ * blocks on event-loop termination, which must not stall the caller of the reload). The {@link ClientSecurityProvider}
  * is supplied once and reused across rebuilds, so TLS/cert-rotation is independent of nodes-file reloads.
  *
- * <p>{@code onNodesReloaded} is only ever called from {@code WatchedFileSource}, which serializes listener
- * callbacks, so it never runs concurrently with itself.
+ * <p>{@code onNodesReloaded} is only ever called from {@code ReloadableFileSource}, which serializes
+ * listener callbacks, so it never runs concurrently with itself.
  */
 final class ReloadableClient implements AutoCloseable {
 
@@ -57,7 +57,7 @@ final class ReloadableClient implements AutoCloseable {
     // replay-on-subscribe of the initial value). Only mutated from onNodesReloaded/construction.
     private volatile Map<NodeId, InetSocketAddress> currentNodes;
 
-    // Shuts down superseded clients so a reload never blocks the file-watch thread. Injected,
+    // Shuts down superseded clients so a reload never blocks the thread that asked for it. Injected,
     // like the executor CertRotationManager takes: this class had built its own while its own
     // module sibling handed one in.
     private final ExecutorService retirer;
@@ -102,7 +102,7 @@ final class ReloadableClient implements AutoCloseable {
 
     /**
      * Apply a reloaded node map: no-op if unchanged, otherwise build a new client, swap it in, and
-     * retire the previous one off-thread. Called only from the file-watch thread.
+     * retire the previous one off-thread. Called only from a reload, which serializes it.
      */
     void onNodesReloaded(final Map<NodeId, InetSocketAddress> nodes) {
         if (closed || nodes.equals(currentNodes)) {
@@ -113,7 +113,11 @@ final class ReloadableClient implements AutoCloseable {
         currentNodes = next;
         final DisCasClient previous = current.getAndSet(fresh);
         retire(previous);
-        reloadObserver.reloaded("nodes", next.keySet().toString());
+        // A second report, and not a duplicate of the file's: that one says the list was applied,
+        // this one says the client now dialing it has been rebuilt and swapped. An agent that read
+        // the file and failed to swap would otherwise look identical in the log to one that did.
+        reloadObserver.reloaded("agent client",
+                "rebuilt for " + DisCasAgent.nodesSummary(next));
     }
 
     private DisCasClient build(final Map<NodeId, InetSocketAddress> nodes) {

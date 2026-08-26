@@ -49,14 +49,17 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * End-to-end test of the agent's hot-reloaded {@code --nodes-file}: the agent starts pointed at a
- * <em>subset</em> of the cluster, then the file is rewritten to the full membership and reloaded, and
- * the agent must rebuild its client to reach the new node set. A malformed rewrite must be ignored
- * (the last good client keeps serving). In the agent's package to reach the package-private
- * {@link DisCasAgent#reloadNodesNow} test hook.
+ * End-to-end test of the agent's {@code --nodes-file}: the agent starts pointed at a
+ * <em>subset</em> of the cluster, then the file is rewritten to the full membership and
+ * {@code POST /v1/agent/reload} is called, and the agent must rebuild its client to reach the new
+ * node set. A malformed rewrite must be refused (the last good client keeps serving) and must say
+ * so, since an operator who rewrote the file and got no answer has no way to tell the difference.
+ * <p>
+ * Driven through the endpoint rather than the API behind it, because the endpoint is what an
+ * operator has: a reload that works in-process and 500s over HTTP is a reload nobody can use.
  */
 @Timeout(value = 5, unit = TimeUnit.MINUTES)
-@DisplayName("Agent -- nodes-file hot reload")
+@DisplayName("Agent -- reloading the nodes file")
 class AgentNodesFileReloadTest {
 
     private static final List<NodeId> NODE_IDS = List.of(NodeId.of("1"), NodeId.of("2"), NodeId.of("3"));
@@ -155,9 +158,13 @@ class AgentNodesFileReloadTest {
         assertFalse(nodesArray.contains("\"3\""), "Expected only node 1 before reload: " + health);
         assertTrue(put("/v1/kv/reload/before", "v1").body().contains("\"ok\":true"));
 
-        // Rewrite the file to the full membership and reload.
+        // Rewrite the file to the full membership and ask for a reload.
         writeNodesFile(NODE_IDS);
-        agent.reloadNodesNow();
+        final HttpResponse<String> reloaded = post("/v1/agent/reload");
+        assertTrue(reloaded.statusCode() == 200, reloaded.body());
+        assertTrue(reloaded.body().contains("\"status\":\"applied\""), reloaded.body());
+        assertTrue(reloaded.body().contains(nodesFile.toString()),
+                "The report names the file it read: " + reloaded.body());
 
         // The client was rebuilt: health now reports all three nodes and KV still works.
         awaitClusterReady("__ready_probe__");
@@ -169,14 +176,25 @@ class AgentNodesFileReloadTest {
         assertTrue(get("/v1/kv/reload/before?raw").body().equals("v1"), "Value survived the swap");
         assertTrue(put("/v1/kv/reload/after", "v2").body().contains("\"ok\":true"));
 
-        // A malformed rewrite is ignored: the last good (3-node) client keeps serving.
+        // A malformed rewrite is refused, and refused out loud: the last good (3-node) client keeps
+        // serving, and the caller is told which file it was and why.
         Files.writeString(nodesFile, "this is not = a valid : members file : at all\n");
-        agent.reloadNodesNow();
+        final HttpResponse<String> refused = post("/v1/agent/reload");
+        assertTrue(refused.statusCode() == 400, refused.body());
+        assertTrue(refused.body().contains("\"outcome\":\"failed\""), refused.body());
         health = get("/v1/agent/health").body();
         nodesArray = extract(health, "\"nodes\":[", "]");
         assertTrue(nodesArray.contains("\"1\"") && nodesArray.contains("\"2\"")
-                && nodesArray.contains("\"3\""), "Malformed reload must be ignored: " + health);
+                && nodesArray.contains("\"3\""), "A refused reload must change nothing: " + health);
         assertTrue(get("/v1/kv/reload/after?raw").body().equals("v2"), health);
+    }
+
+    @Test
+    @DisplayName("A GET on the reload endpoint is refused")
+    void reloadRefusesAnythingButPost() throws Exception {
+        // It changes what the agent is running on, and a GET that does is a GET something will
+        // eventually retry, prefetch or cache.
+        assertTrue(get("/v1/agent/reload").statusCode() == 405);
     }
 
     private void writeNodesFile(final Collection<NodeId> ids) throws Exception {
@@ -211,6 +229,11 @@ class AgentNodesFileReloadTest {
     private HttpResponse<String> put(final String path, final String body) throws Exception {
         return send(HttpRequest.newBuilder(URI.create(baseUrl + path))
                 .PUT(HttpRequest.BodyPublishers.ofString(body)).build());
+    }
+
+    private HttpResponse<String> post(final String path) throws Exception {
+        return send(HttpRequest.newBuilder(URI.create(baseUrl + path))
+                .POST(HttpRequest.BodyPublishers.noBody()).build());
     }
 
     private HttpResponse<String> send(final HttpRequest request) throws Exception {

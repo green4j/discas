@@ -8,7 +8,7 @@
 package io.github.green4j.discas.client.lock;
 
 /**
- * An immutable description of one lock record: who holds it, under which token, and for how long.
+ * An immutable description of one lock record: who holds it, since when, and for how long.
  * <p>
  * A point-in-time reading, never a live view. {@link #expired()} in particular is decided against
  * the clock supplied to {@link #fromRecord}, so a {@code LockInfo} kept around outgrows its own
@@ -22,12 +22,12 @@ public final class LockInfo {
     private final long generation;
     private final boolean expired;
 
-    public LockInfo(final String ownerId,
-                    final LockToken token,
-                    final long acquiredAtEpochMs,
-                    final long leaseUntilEpochMs,
-                    final long generation,
-                    final boolean expired) {
+    LockInfo(final String ownerId,
+             final LockToken token,
+             final long acquiredAtEpochMs,
+             final long leaseUntilEpochMs,
+             final long generation,
+             final boolean expired) {
         this.ownerId = ownerId;
         this.token = token;
         this.acquiredAtEpochMs = acquiredAtEpochMs;
@@ -51,13 +51,28 @@ public final class LockInfo {
         );
     }
 
-    /** The holder's client id, as it identified itself when acquiring. Diagnostic, not a credential. */
+    /**
+     * The name the holder acquired under. Not a credential -- only the {@link Lock#token() token}
+     * decides who may release or renew -- but not decoration either: it is the one field of a record
+     * that its writer chose before writing it, which is what lets that writer recognise its own
+     * lease afterwards when an acquire's outcome was never reported.
+     * <p>
+     * Comparing it against your own id is what {@code tryLock} does to answer
+     * {@link LockAcquireStatus#HELD_BY_SELF}, and what {@code recoverLock} acts on. Both are only
+     * as sound as the id's uniqueness among concurrent holders, which is the caller's to
+     * guarantee.
+     */
     public String ownerId() {
         return ownerId;
     }
 
-    /** The holder's token -- what a release or renew must present to be accepted. */
-    public LockToken token() {
+    /**
+     * The holder's token. Deliberately not public: a reading of a lock is available to anyone who
+     * can read the key, and the token is what release and renew are conditioned on, so publishing
+     * it here would let any reader end a lease it does not hold. A holder gets its own token from
+     * {@link Lock#token()}, and a holder that lost it gets the lock back from {@code recoverLock}.
+     */
+    LockToken token() {
         return token;
     }
 

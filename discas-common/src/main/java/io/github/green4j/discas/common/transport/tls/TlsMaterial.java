@@ -67,4 +67,37 @@ public final class TlsMaterial {
         }
         return null;
     }
+
+    /**
+     * One line for the reload report: which certificate this node now presents, until when, and
+     * how many CAs it will accept.
+     *
+     * <p>Everything here is on the wire in the first two packets of every handshake -- a leaf's
+     * subject, issuer, serial and validity are what the other side is shown in order to check it.
+     * The private key and its password are the material worth protecting, and neither is named
+     * here. What the line is for is the rotation question: after writing new files, did this
+     * process pick up the <em>new</em> leaf, and does it still trust the old CA?
+     */
+    public String summary() {
+        final StringBuilder sb = new StringBuilder();
+        final X509Certificate leaf = leafCertificate();
+        if (leaf == null) {
+            sb.append("no leaf certificate");
+        } else {
+            sb.append("leaf ").append(leaf.getSubjectX500Principal().getName())
+                    .append(" (serial ").append(leaf.getSerialNumber().toString(16))
+                    .append(", issued by ").append(leaf.getIssuerX500Principal().getName())
+                    .append(", expires ").append(leaf.getNotAfter().toInstant()).append(')');
+        }
+        sb.append(", trusting ").append(trustAnchorCount()).append(" CA(s)");
+        return sb.toString();
+    }
+
+    private int trustAnchorCount() {
+        try {
+            return trustStore.size();
+        } catch (final Exception e) {
+            return -1;
+        }
+    }
 }

@@ -49,7 +49,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * The full production assembly: a 3-node cluster whose peer mesh runs over
- * <b>mTLS</b> with a shared cluster CA, membership comes from a hot-reloadable
+ * <b>mTLS</b> with a shared cluster CA, membership comes from a reloadable
  * <b>{@link FileMembers} list</b>, and each node's cert is renewed from disk by a
  * <b>{@link CertRotationManager}</b> -- then a live cert rotation is performed
  * with zero mesh disruption.
@@ -155,12 +155,13 @@ public final class SecureClusterFileMembersExample {
             System.out.println("get  account:42 -> "
                     + utf8ToString(client.get(key.duplicate()).get(5, TimeUnit.SECONDS).value()));
 
-            // Live cert rotation: renew every node's cert on disk, then have the
-            // rotation manager hot-swap it. Existing peer links keep serving.
+            // Live cert rotation: renew every node's cert on disk, then ask each node to read it.
+            // Nothing reads the file until then, so a half-written store cannot be picked up.
+            // Existing peer links keep serving.
             System.out.println("--- rotating every node's certificate ---");
             for (final NodeId nodeId : NODE_IDS) {
                 ca.issueNode(nodeId);                 // external agent renews the file
-                sources.get(nodeId).reloadNow();      // force an immediate pick-up (push -> node loop)
+                sources.get(nodeId).reloadNow();      // read it, and push -> node loop
                 System.out.println("rotated " + nodeId + " cert");
             }
 

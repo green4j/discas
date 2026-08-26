@@ -23,7 +23,15 @@ public final class RequestFailedException extends DisCasClientException {
         /** Every peer was tried and the send itself failed on each. */
         ALL_PEERS_EXHAUSTED,
         /** Fewer than a majority of nodes answered a scan, so the merge could not be trusted. */
-        SCAN_NO_QUORUM
+        SCAN_NO_QUORUM,
+        /**
+         * An unfenced write reached a coordinator that then went silent or died, so the client
+         * stopped rather than re-sending it: a duplicate unfenced write can revert a writer that
+         * committed in between. The write may or may not have applied, and only the caller can
+         * settle that -- by reading the key back if the value identifies its author, or by
+         * switching to a version-fenced write, whose duplicate is provably a no-op.
+         */
+        INDETERMINATE
     }
 
     private final Cause cause;

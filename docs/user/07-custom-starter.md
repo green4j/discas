@@ -1,7 +1,7 @@
 # 7. Writing your own starter
 
 [6](06-embedding-a-node.md) gets you a running node. This is what stands between that and something
-you would operate: diagnostics, probes, client security, hot reload, and an orderly shutdown.
+you would operate: diagnostics, probes, client security, reloading files, and an orderly shutdown.
 
 The reference implementation is `DisCasNodeStarter`
 (`discas-node/src/main/java/io/github/green4j/discas/node/starter/DisCasNodeStarter.java`) -- read it
@@ -61,21 +61,24 @@ import io.github.green4j.discas.common.observability.ObservabilityServer;
 
 ObservabilityServer observability = ObservabilityServer.start(
         ObservabilityConfig.builder().bindAddress("127.0.0.1").port(9600).build(),
-        NodeEndpoints.router(nodeId, node.healthSource(), peerState, metrics));
+        NodeEndpoints.router(nodeId, node.healthSource(), peerState, metrics,
+                node::reloadFiles));
 
 node.addLifecycleCloseable(observability);
 ```
 
-Three endpoints: `/metrics`, `/health` and `/ready`. **Wire the liveness probe of your orchestrator
-to `/health`, never to `/ready`** -- `/health` is deliberately local-only, and pointing a
-`livenessProbe` at a quorum-aware endpoint turns a network partition into a cluster-wide crashloop,
-killing every node exactly when each could still have served stale reads and rejoined.
+Four endpoints: `/metrics`, `/health`, `/ready`, and `POST /reload`, whose supplier is the node's own
+[`reloadFiles()`](#reload). **Wire the liveness probe of your orchestrator to `/health`, never to
+`/ready`** -- `/health` is deliberately local-only, and pointing a `livenessProbe` at a quorum-aware
+endpoint turns a network partition into a cluster-wide crashloop, killing every node exactly when
+each could still have served stale reads and rejoined.
 
 Build the endpoints **last** among the node's wiring, so they only ever observe a fully built node,
 and register them as a lifecycle closeable so the listening socket goes away with it.
 
 The default bind address is loopback, on purpose: these endpoints report the cluster's topology and
-every peer's identity. Widening it should be a deliberate act.
+every peer's identity, and `/reload` changes what the node enforces while authenticating nobody.
+Widening it should be a deliberate act.
 
 ## Client access
 
@@ -106,7 +109,7 @@ node.addLifecycleCloseable(clientServer);
 open contract for tests, and means forgetting `registerClientAcl` in production is a silent
 wide-open cluster. If you accept it deliberately, say so in a log line at startup.
 
-## Hot reload
+## Reload
 
 Anything file-backed reloads through one mechanism, and all of it reports through one
 `ReloadObserver`:
@@ -127,9 +130,23 @@ node.addLifecycleCloseable(members);
 Build this **first** -- the very first thing a node does is load its member list, so the seam has to
 exist before the node does.
 
-What reloads: the member list (addresses only), client tokens, the client ACL, and TLS material. A
-reload that fails to parse keeps the last good value and raises an operator condition; the process
-keeps running on what it had, which is why the condition matters.
+What reloads: the member list (addresses only), client tokens, the client ACL, and TLS material.
+Each of these registers itself when you construct it, and nothing re-reads a file until you ask:
+
+```java
+ReloadReport report = node.reloadFiles();   // every registered source, all or nothing
+if (!report.applied()) {
+    log.warn("reload refused: " + report);
+}
+```
+
+Expose that call however your process is operated -- an endpoint, a signal handler, a JMX operation.
+`DisCasNodeStarter` publishes it as `POST /reload` on the observability server, and
+`NodeEndpoints.router(..., node::reloadFiles)` wires it if you build your own.
+
+Every source parses before any of them publishes, so one unparseable file leaves the whole set as it
+was, with the last good value in force and an operator condition raised. The process keeps running
+on what it had, which is why the condition matters.
 
 For certificates, add rotation once the node exists, so the swap runs on its loop:
 
@@ -172,5 +189,5 @@ past failures.
 | `ClientSecurityProvider` | plaintext |
 | `registerClientAcl` | **every key writable by everyone** |
 | `ReloadObserver` | reload failures are invisible; the node serves stale config silently |
-| lifecycle registration | sockets and watchers outlive the node |
+| lifecycle registration | sockets and reloadable sources outlive the node |
 | shutdown hook | no orderly drain |

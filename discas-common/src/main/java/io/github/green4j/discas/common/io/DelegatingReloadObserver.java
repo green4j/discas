@@ -36,13 +36,13 @@ public abstract class DelegatingReloadObserver implements ReloadObserver {
     }
 
     @Override
-    public void reloadFailed(final String source, final Throwable error) {
-        delegate.reloadFailed(source, error);
+    public void reloadUnchanged(final String source, final String detail) {
+        delegate.reloadUnchanged(source, detail);
     }
 
     @Override
-    public void watchUnavailable(final String source, final Throwable error) {
-        delegate.watchUnavailable(source, error);
+    public void reloadFailed(final String source, final Throwable error) {
+        delegate.reloadFailed(source, error);
     }
 
     @Override

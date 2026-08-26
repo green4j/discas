@@ -1,11 +1,10 @@
 # Discas: CASPaxos Key-Value Store
 
-`discas` (DIStributed CAS) is a tiny Java implementation of a CASPaxos-based replicated key-value
+`discas` (DIStributed CAS) is a tiny zero-dependency Java implementation of a CASPaxos-based replicated key-value
 store. It holds the **shared state a set of microservices agrees on** -- locks, leadership,
 configuration, ownership -- and is deliberately **not a large platform-wide, multi-tenant service**.
 
-It runs embedded in your own JVM or as a standalone node, with no runtime dependencies: the HTTP
-server, CLI parser, metric registry and logger are written here.
+It runs embedded in your own JVM or as a standalone node, with no runtime dependencies.
 
 ---
 
@@ -107,7 +106,7 @@ it is argued in full.
 
 **Membership and topology**
 
-- **`N` is frozen while the cluster runs, and online resizing is not planned.** Hot reload covers
+- **`N` is frozen while the cluster runs, and online resizing is not planned.** A reload covers
   member addresses, certificates, and constant-`N` replacement -- not `N` itself, since `N` determines
   quorum. It is a durability decision made when the system is designed, and adding members to a
   CASPaxos cluster makes it *slower*: every key lives on every member, so another member adds a
@@ -142,7 +141,7 @@ plaintext, appropriate on a trusted network and nowhere else; enabling security 
 protocol.
 
 - **Peer to peer** -- mutual TLS with a shared cluster CA, membership enforced in the `PEER_HELLO`
-  handshake against a hot-reloadable member list with no coordinator, and zero-disruption cert
+  handshake against a reloadable member list with no coordinator, and zero-disruption cert
   rotation.
 - **Client to node** -- mutual TLS (identity bound to `CN=<clientId>`) or server-authenticated TLS
   plus a token, layered with per-client, default-deny prefix authorization. Auth and policy live in

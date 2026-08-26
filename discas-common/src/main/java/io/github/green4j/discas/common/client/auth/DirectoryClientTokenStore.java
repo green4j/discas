@@ -7,15 +7,14 @@
 
 package io.github.green4j.discas.common.client.auth;
 
-import io.github.green4j.discas.common.io.WatchedFile;
 import io.github.green4j.discas.common.identity.ClientId;
-import io.github.green4j.discas.common.io.FileWatchDaemon;
+import io.github.green4j.discas.common.io.ReloadableFiles;
+import io.github.green4j.discas.common.io.ReloadReport;
 
 import java.nio.file.Files;
 import io.github.green4j.discas.common.io.ReloadObserver;
 
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,9 +31,11 @@ import java.util.stream.Stream;
  * {@code ;}-separated; multiple records = overlap rotation). Adding, rotating, or revoking a
  * client is dropping, editing, or deleting one file -- no shared file to rewrite.
  * <p>
- * The directory is watched on the shared {@link FileWatchDaemon} (a sentinel path inside it
- * makes the daemon watch the directory itself) plus a periodic safety rescan; a change
- * re-lists the directory and republishes on {@code equals}-change, with replay-on-subscribe.
+ * A directory rather than a fixed set of paths, so this registers with {@link ReloadableFiles} on
+ * its own rather than through {@code ReloadableFileSource}: the whole directory is rescanned, which
+ * is how a client file appearing, changing or being deleted is noticed. What it shares with every
+ * other source is what matters -- the scan is complete before anything is published, and it
+ * republishes only on an {@code equals}-change, with replay-on-subscribe.
  */
 public final class DirectoryClientTokenStore implements ClientTokenStore, AutoCloseable {
 
@@ -42,33 +43,22 @@ public final class DirectoryClientTokenStore implements ClientTokenStore, AutoCl
 
     private final Path dir;
     private final CopyOnWriteArrayList<Consumer<ClientTokens>> listeners = new CopyOnWriteArrayList<>();
-    private final FileWatchDaemon.Registration registration;
+    private final ReloadableFiles.Registration registration;
 
     private final ReloadObserver observer;
 
     private volatile ClientTokens current;
+    private ClientTokens staged;
 
     public DirectoryClientTokenStore(final Path dir) {
-        this(dir, WatchedFile.DEFAULT_POLL_INTERVAL);
+        this(dir, ReloadObserver.NONE);
     }
 
     public DirectoryClientTokenStore(final Path dir, final ReloadObserver observer) {
-        this(dir, WatchedFile.DEFAULT_POLL_INTERVAL, observer);
-    }
-
-    public DirectoryClientTokenStore(final Path dir, final Duration pollInterval) {
-        this(dir, pollInterval, ReloadObserver.NONE);
-    }
-
-    public DirectoryClientTokenStore(final Path dir, final Duration pollInterval,
-                                     final ReloadObserver observer) {
         this.observer = observer == null ? ReloadObserver.NONE : observer;
         this.dir = dir.toAbsolutePath();
         this.current = scan();
-        // Register a sentinel path inside the directory so the daemon watches the directory
-        // for created/modified/deleted client files, with the interval as a safety rescan.
-        this.registration = FileWatchDaemon.shared().register(
-                List.of(this.dir.resolve("__scan__")), pollInterval, this::refresh, this.observer);
+        this.registration = ReloadableFiles.shared().register(asSource());
     }
 
     @Override
@@ -82,9 +72,15 @@ public final class DirectoryClientTokenStore implements ClientTokenStore, AutoCl
         listeners.add(listener);
     }
 
-    /** Force an immediate rescan (e.g. in tests). */
-    public void reloadNow() {
-        refresh();
+    /** Rescan this directory alone and apply what it holds. */
+    public ReloadReport.Entry reloadNow() {
+        final ReloadReport.Entry entry = prepare();
+        if (entry.outcome().accepted()) {
+            commit();
+        } else {
+            discard();
+        }
+        return entry;
     }
 
     @Override
@@ -92,21 +88,72 @@ public final class DirectoryClientTokenStore implements ClientTokenStore, AutoCl
         registration.close();
     }
 
-    private synchronized void refresh() {
+    private ReloadableFiles.Source asSource() {
+        return new ReloadableFiles.Source() {
+            @Override
+            public String source() {
+                return DirectoryClientTokenStore.this.source();
+            }
+
+            @Override
+            public ReloadReport.Entry prepare() {
+                return DirectoryClientTokenStore.this.prepare();
+            }
+
+            @Override
+            public void commit() {
+                DirectoryClientTokenStore.this.commit();
+            }
+
+            @Override
+            public void discard() {
+                DirectoryClientTokenStore.this.discard();
+            }
+        };
+    }
+
+    private synchronized ReloadReport.Entry prepare() {
+        staged = null;
         final ClientTokens candidate;
         try {
             candidate = scan();
         } catch (final Exception e) {
-            observer.reloadFailed("client-token directory " + dir, e);
-            return; // keep the last good value
+            observer.reloadFailed(source(), e);
+            return new ReloadReport.Entry(source(), ReloadReport.Outcome.FAILED,
+                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
         }
         if (candidate.equals(current)) {
+            final String detail = "the directory holds what is already in force; not applied";
+            observer.reloadUnchanged(source(), detail);
+            return new ReloadReport.Entry(source(), ReloadReport.Outcome.UNCHANGED, detail);
+        }
+        staged = candidate;
+        return new ReloadReport.Entry(source(), ReloadReport.Outcome.APPLIED, candidate.summary());
+    }
+
+    private synchronized void commit() {
+        final ClientTokens candidate = staged;
+        staged = null;
+        if (candidate == null) {
             return;
         }
         current = candidate;
         for (final Consumer<ClientTokens> listener : listeners) {
-            listener.accept(candidate);
+            try {
+                listener.accept(candidate);
+            } catch (final Exception e) {
+                observer.checkFailed(source(), e);
+            }
         }
+        observer.reloaded(source(), "applied -- " + candidate.summary());
+    }
+
+    private synchronized void discard() {
+        staged = null;
+    }
+
+    private String source() {
+        return "client-token directory " + dir;
     }
 
     private ClientTokens scan() {

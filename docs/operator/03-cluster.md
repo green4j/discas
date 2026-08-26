@@ -71,14 +71,18 @@ current endpoint with no config edit. That is why this handbook says "address" a
 
 ### What a reload does
 
-The file is watched, with a slow safety poll behind the watcher:
+Edit the file in place -- nothing reads it until you ask -- then put it in force with
+`curl -X POST http://127.0.0.1:9600/reload` on that member, and on every other member you copied it
+to. The reply says what happened to each file
+([7. Configuration](07-configuration.md#reload-vs-restart) has the full shape).
 
 | Edit | Effect |
 |---|---|
 | Member re-addressed | new address stored. With `--peer-force-reconnect false` (default) a healthy connection stays and the address is used at the next reconnect; `true` drops it to reconnect now |
 | Member swapped for another at the same `N` | applied -- the old peer's connections close, the new one becomes connectable |
-| Member added or removed (changing `N`) | **ignored and logged.** Quorum cannot change without a restart |
-| Malformed, or touched but unchanged | ignored; the current list is kept |
+| Member added or removed (changing `N`) | **refused and logged.** Quorum cannot change without a restart |
+| Malformed | refused; the current list is kept -- and so is every other file in that reload |
+| Rewritten with the same meaning | reported `unchanged`; nothing is re-applied |
 
 ### Planning a cross-region cluster
 
@@ -133,17 +137,17 @@ What you must **never** do is hand the replacement a copy of another member's da
 Only when the id itself has to go. This is a membership edit and costs a PKI change:
 
 1. Issue a cert for the new `node_id`, SAN `discas://<cluster_id>/<new_node_id>`.
-2. **In one edit**, on every node: remove the old `node.<old>` line and add `node.<new>=host:port`.
-   `N` is unchanged, so the reload is applied.
+2. **In one edit**, on every node: remove the old `node.<old>` line, add `node.<new>=host:port`, and
+   `POST /reload`. `N` is unchanged, so the reload is applied.
 3. Start the new node. It joins as above -- empty, and recovering a floor before serving.
 4. Stop the old node.
 
 ### Evicting a compromised member now
 
-A bare removal shrinks `N` and is ignored, so use a **constant-`N` swap**: on every node, replace the
-compromised `node.<id>` with a standby or a blackhole placeholder address in the same edit. The
-reload closes its connections and refuses its re-handshakes (`UNKNOWN_MEMBER`) while `N`, and
-therefore quorum, stays fixed. Stop renewing its certificate too.
+A bare removal shrinks `N` and is refused, so use a **constant-`N` swap**: on every node, replace the
+compromised `node.<id>` with a standby or a blackhole placeholder address in the same edit, then
+`POST /reload`. The reload closes its connections and refuses its re-handshakes (`UNKNOWN_MEMBER`)
+while `N`, and therefore quorum, stays fixed. Stop renewing its certificate too.
 
 ### Changing `N`
 

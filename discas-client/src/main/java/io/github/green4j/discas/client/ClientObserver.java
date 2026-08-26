@@ -26,7 +26,7 @@ import io.github.green4j.discas.common.identity.NodeId;
  * default costs nothing.
  * <p>
  * This seam covers the client itself. Shared infrastructure that the client happens to use --
- * file watching, token stores, certificate rotation -- is used by nodes too and is not reported
+ * file reloads, token stores, certificate rotation -- is used by nodes too and is not reported
  * here.
  */
 public interface ClientObserver {

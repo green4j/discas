@@ -139,7 +139,7 @@ keytool -importcert -noprompt -alias ca -keystore client-ca-trust.p12 \
 ```
 
 > **Revocation on the client port is policy, not PKI.** To cut a client off immediately, drop its
-> token record or its ACL grant -- both hot-reloaded, both effective at the next request. For pure
+> token record or its ACL grant, then `POST /reload` -- effective at the next request. For pure
 > mTLS, remove it from your issuing pipeline and let a short leaf lapse, or roll the client CA to
 > invalidate a compromised leaf now.
 
@@ -195,9 +195,10 @@ spec:
 ```
 
 Mount the Secret and point `--tls-keystore` / `--tls-truststore` (or the `--client-tls-*` pair) at
-`keystore.p12` and `truststore.p12`. cert-manager rewrites the Secret on renewal and discas
-hot-reloads it. The node's client-CA trust store is a single rarely-changing object -- mount the CA
-once.
+`keystore.p12` and `truststore.p12`. cert-manager rewrites the Secret on renewal, and discas picks
+the new material up when the pod is asked to reload -- `POST 127.0.0.1:9600/reload`, from a sidecar
+watching the mount or from whatever drives your renewals. The node's client-CA trust store is a
+single rarely-changing object -- mount the CA once.
 
 Recommended: `duration: 24h`, `renewBefore: 8h`.
 
@@ -239,8 +240,9 @@ vault write discas-client-pki/issue/client common_name=web-1 ttl=24h
 
 Deliver the material to files with **Vault Agent** templating or a small sidecar: render the leaf
 and key into a PKCS12 key store and the CA into a trust store -- `openssl pkcs12 -export` plus
-`keytool -importcert`, as above -- then point the flags at them. Vault's TTL drives renewal; discas
-hot-reloads on file change.
+`keytool -importcert`, as above -- then point the flags at them. Vault's TTL drives renewal; have
+the same hook that renders the files finish with `curl -X POST 127.0.0.1:9600/reload`, which reads
+the key store and the trust store together.
 
 Recommended: `ttl 24h`, agent renews at about half-life.
 
@@ -261,8 +263,9 @@ aws acm-pca get-certificate --certificate-authority-arn "$CA_ARN" \
 ```
 
 A renewal sidecar, or a Lambda plus a deployment, bundles `node.crt` and the key into `node.p12` and
-the CA into `trust.p12` as above, writes them to the node's certificate directory, and loops before
-expiry. discas hot-reloads on change.
+the CA into `trust.p12` as above, writes them to the node's certificate directory, calls
+`POST 127.0.0.1:9600/reload`, and loops before expiry. Reload after both files are written, never
+between them: one call applies the pair or neither.
 
 Recommended: one-day validity, renewed daily.
 

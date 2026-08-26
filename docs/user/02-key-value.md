@@ -178,6 +178,13 @@ cheaply without running a round. And for a **fenced** write, on `UNAVAILABLE`, `
 twice. So an error from a `cas` means every reachable coordinator was tried; an error from a `put`
 usually means one was.
 
+The same rule holds when no answer arrives at all. A coordinator that goes silent past the
+per-attempt timeout, or whose connection dies, is a failure with no phase to read, so only the
+fence can justify trying elsewhere. A fenced write moves on; an unfenced one that had already
+reached the wire stops there and fails with `RequestFailedException` carrying
+`Cause.INDETERMINATE`. A request the client never managed to send is safe whatever it is, and
+still moves on.
+
 ## The one that needs care
 
 `UNAVAILABLE` means the round reached the accept phase and did not complete in time. Some acceptor
@@ -194,8 +201,10 @@ client.cas(key, expected, desired)
 ```
 
 **With an unfenced `put`/`delete` there is no safe automatic recovery**, which is why the client does
-not retry them and tells you instead. If you need one, make the write identify its author and read
-it back:
+not retry them and tells you instead -- as `UNAVAILABLE` when a node answered, and as
+`Cause.INDETERMINATE` when none did. The cost is real: an unfenced write gives up after the first
+coordinator that goes quiet, where a fenced one would have kept walking. If you need a recovery,
+make the write identify its author and read it back:
 
 ```java
 String marker = "writer-" + myId + ":" + payload;

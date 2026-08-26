@@ -68,7 +68,7 @@ completes.
 
 ## RB-02. Restart a node
 
-**When** -- a configuration change that is not hot-reloaded, `WAL_DEGRADED` after clearing the
+**When** -- a configuration change that no reload covers, `WAL_DEGRADED` after clearing the
 device, `SHUTDOWN_INCOMPLETE`, or an ordinary maintenance restart.
 
 **Preconditions** -- every *other* member reports `/ready` 200. At `N`=3 this procedure tolerates one
@@ -95,7 +95,7 @@ is untouched by either.
 
 ## RB-03. Rolling restart or upgrade
 
-**When** -- a version rollout, or any non-hot configuration change every member needs.
+**When** -- a version rollout, or any configuration change every member needs that no reload covers.
 
 **Preconditions** -- every member reports `/ready` 200. **No peer-protocol change in this version** --
 if there is one, use RB-04 instead, or accept a write outage.
@@ -410,13 +410,14 @@ before anyone presents leaves from it.
 
 **Steps**
 
-1. **Trust first.** Update **every** node's trust store to contain **both** old and new CAs. Each
-   node hot-swaps it. Everyone now accepts both; nobody presents a new leaf yet, so nothing changes
-   on the wire.
-2. **Re-issue leaves** from the new CA for each `node_id` -- same identity, same SAN -- and write the
-   new key stores. Roll node by node at your own pace; the overlap makes any mix valid.
+1. **Trust first.** Update **every** node's trust store to contain **both** old and new CAs, then
+   `curl -X POST http://127.0.0.1:9600/reload` on each to swap it in. Everyone now accepts both;
+   nobody presents a new leaf yet, so nothing changes on the wire.
+2. **Re-issue leaves** from the new CA for each `node_id` -- same identity, same SAN -- write the new
+   key stores, and reload. Roll node by node at your own pace; the overlap makes any mix valid. One
+   reload reads a node's key store and trust store together, so the pair is never half-applied.
 3. **Retire the old CA** once *every* node presents a new-CA leaf: update the trust stores to drop
-   it and let them reload.
+   it and reload each node.
 
 **Verify** -- after each step, `discas_node_peers_handshaked` is unchanged and
 `discas_node_peer_handshakes_rejected_total` is flat. After step 3, the old CA can be destroyed.
@@ -433,7 +434,8 @@ complete everywhere.
 
 **When** -- scheduled token rotation, a compromised credential, or a client CA roll.
 
-**Preconditions** -- none. All of this is hot-reloaded; no restart, no dropped connections.
+**Preconditions** -- none. Every step here is a file edit plus a reload; no restart, no dropped
+connections.
 
 ### Tokens
 
@@ -442,13 +444,14 @@ complete everywhere.
    discas-admin token --client-id web-1 --ttl-days 90
    ```
 2. Append its record to that client's line after ` ; `, or add it to the client's `<id>.token` file.
-3. Give the new secret to the client and let it switch over. Both are valid during the overlap.
-4. Drop the old record, or let its `notAfter` retire it.
+3. `POST /reload` on **every** node.
+4. Give the new secret to the client and let it switch over. Both are valid during the overlap.
+5. Drop the old record, or let its `notAfter` retire it, and reload again.
 
 ### Client certificates
 
-Re-issue over the client's key store, same CN. Established sessions ride on; new handshakes use the
-new material.
+Re-issue over the client's key store, same CN. Nothing to reload node-side. Established sessions
+ride on; new handshakes use the new material.
 
 ### Client CA
 
@@ -458,18 +461,19 @@ trust store: add the new CA there first, re-issue client leaves, then drop the o
 ### Adding a client
 
 Same command, no rotation: `discas-admin token -c <id> >> <token file>`, then grant it in the ACL
-file. Both are hot-reloaded, so neither needs a restart.
+file and reload. One reload covers both files, so the token and its grant arrive together.
 
 ### Cutting a client off now
 
-Policy, not PKI: drop its token record or its ACL grant. Both apply at the next request. For pure
-mTLS, remove it from the issuing pipeline and let a short leaf lapse, or roll the client CA.
+Policy, not PKI: drop its token record or its ACL grant and reload. It applies at the client's next
+request. For pure mTLS, remove it from the issuing pipeline and let a short leaf lapse, or roll the
+client CA.
 
-**Verify** -- `discas_reloads_total` increments and `discas_reload_failures_total` does not; the
-client can still connect (or, for a revocation, cannot).
+**Verify** -- the reload answers `200`, `discas_reloads_total` increments and
+`discas_reload_failures_total` does not; the client can still connect (or, for a revocation, cannot).
 
-**Rollback** -- put the old record back. A malformed file is not an outage: the last good version
-stays in force.
+**Rollback** -- put the old record back and reload. A malformed file is not an outage: it is refused
+and the last good version stays in force.
 
 -> [5. Access](05-access.md#rotating-a-token)
 

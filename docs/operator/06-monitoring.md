@@ -32,10 +32,11 @@ curl -s localhost:9600/metrics   # Prometheus/OpenMetrics text
 ```
 
 The observability endpoints bind to **`127.0.0.1:9600` by default** -- loopback, because they expose
-peer identities and topology. `--observability-bind`, `--observability-workers` and
-`--observability-enabled` configure them, each with a `DISCAS_*` variable. The agent carries the
-same three flags for its own `/metrics`, defaulting to `127.0.0.1:9601` so the two do not collide on
-one host.
+peer identities and topology, and because the one non-read-only route on this port,
+`POST /reload` ([7. Configuration](07-configuration.md#reload-vs-restart)), authenticates nobody.
+`--observability-bind`, `--observability-workers` and `--observability-enabled` configure them, each
+with a `DISCAS_*` variable. The agent carries the same three flags for its own `/metrics`,
+defaulting to `127.0.0.1:9601` so the two do not collide on one host.
 
 ### `/health` and `/ready`
 
@@ -135,7 +136,7 @@ the log. Per-peer labels are safe because `N` is frozen at startup.
 | Is the store filling? | `STORE_FULL` via the attention rule; `discas_node_writes_refused_no_capacity_total` |
 | Is reclamation stuck? | `discas_node_tombstone_collection_blocked_seconds` -- alert at a **day**, never at a sweep |
 | Is material about to expire? | `discas_reload_material_expires_seconds` |
-| Did my config edit take? | `discas_reloads_total` vs `discas_reload_failures_total` |
+| Did my config edit take? | the `POST /reload` reply says so per file. After the fact: `discas_reloads_total` vs `discas_reload_failures_total`, and `discas_reloads_unchanged_total` for the third answer -- read, understood, and identical to what was already running |
 | Is the software misbehaving? | `discas_node_event_loop_task_failures_total` and the `INTERNAL` state |
 | Did a member lose its volume? | `discas_node_state_awaiting_floor_total` rising on a member that should have had one -- [2. The node](02-node.md#on-an-orchestrated-platform) |
 

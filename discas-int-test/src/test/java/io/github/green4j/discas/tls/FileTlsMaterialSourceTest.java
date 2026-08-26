@@ -23,7 +23,6 @@ import java.io.OutputStream;
 import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileTime;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -123,14 +122,7 @@ class FileTlsMaterialSourceTest {
         }
     }
 
-    /**
-     * Rewrite the key store and advance its last-modified time so the watch signature
-     * (mtime + size) changes deterministically even where a same-second rewrite yields an
-     * identical size -- the content fingerprint then gates the actual push.
-     */
     private static void renewKeyStore(final TlsMaterial material, final Path keyFile) throws Exception {
-        final FileTime before = Files.getLastModifiedTime(keyFile);
         writeKeyStore(material, keyFile);
-        Files.setLastModifiedTime(keyFile, FileTime.from(before.toInstant().plusSeconds(2)));
     }
 }

@@ -15,8 +15,10 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link LockValueCodec} -- the on-the-wire layout, pinned byte for byte.
@@ -89,6 +91,59 @@ class LockValueCodecTest {
         // Callers read the same value again (getLockInfo, then release's CAS on it), so a decoder
         // that advanced the position would hand the second reader an empty buffer.
         assertEquals(positionBefore, encoded.position());
+    }
+
+    @Test
+    @DisplayName("A release marker keeps the tenancy it ended and zeroes only the lease")
+    void releaseMarkerRemembersItsWriter() {
+        final LockValueCodec.LockRecord held = new LockValueCodec.LockRecord(
+                "worker-3", ByteBuffer.wrap(new byte[] {1, 2, 3, 4}), 1000L, 2000L, 7L);
+
+        final LockValueCodec.LockRecord marker = LockValueCodec.LockRecord.releasedMarker(held);
+
+        assertTrue(marker.isReleased());
+        assertEquals(0L, marker.leaseUntilEpochMs());
+        // The three fields that make a retried release, and a later reader, able to say anything
+        // at all about whose lock this key last was.
+        assertEquals("worker-3", marker.ownerId());
+        assertEquals(held.token(), marker.token());
+        assertEquals(7L, marker.generation());
+
+        final LockValueCodec.LockRecord roundTripped =
+                LockValueCodec.decode(LockValueCodec.encode(marker));
+        assertNotNull(roundTripped);
+        assertTrue(roundTripped.isReleased());
+        assertEquals("worker-3", roundTripped.ownerId());
+        assertEquals(held.token(), roundTripped.token());
+    }
+
+    @Test
+    @DisplayName("Markers of either shape read as free to a reader of either build")
+    void releaseMarkersStayCompatibleAcrossBuilds() {
+        // The layout version is deliberately unchanged, so a build that predates carrying the
+        // owner and token on a marker still decodes one -- it just applies a stricter predicate,
+        // reproduced here. What has to hold is that neither build ends up thinking the key is
+        // taken, because that is what would block acquires across a rolling upgrade.
+        final LockValueCodec.LockRecord blank = new LockValueCodec.LockRecord(
+                "", ByteBuffer.allocate(0), 0L, 0L, 7L);
+        final LockValueCodec.LockRecord carried = LockValueCodec.LockRecord.releasedMarker(
+                new LockValueCodec.LockRecord(
+                        "worker-3", ByteBuffer.wrap(new byte[] {1, 2, 3, 4}), 1000L, 2000L, 7L));
+
+        // Both shapes are released to this build.
+        assertTrue(blank.isReleased());
+        assertTrue(carried.isReleased());
+        // The older, stricter predicate calls the carried one a lock -- and still sees a lease of
+        // zero, which no clock is behind, so it reads the key as free and acquirable all the same.
+        assertTrue(releasedByTheOlderPredicate(blank));
+        assertFalse(releasedByTheOlderPredicate(carried));
+        assertEquals(0L, carried.leaseUntilEpochMs());
+    }
+
+    private static boolean releasedByTheOlderPredicate(final LockValueCodec.LockRecord record) {
+        return record.leaseUntilEpochMs() == 0L
+                && record.ownerId().isEmpty()
+                && record.token().remaining() == 0;
     }
 
     @Test

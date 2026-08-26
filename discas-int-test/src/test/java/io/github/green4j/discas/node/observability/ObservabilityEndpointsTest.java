@@ -8,6 +8,7 @@
 package io.github.green4j.discas.node.observability;
 
 import io.github.green4j.discas.common.identity.NodeId;
+import io.github.green4j.discas.common.io.ReloadReport;
 import io.github.green4j.discas.common.metrics.MetricRegistry;
 import io.github.green4j.discas.common.observability.ObservabilityConfig;
 import io.github.green4j.discas.common.observability.ObservabilityServer;
@@ -28,6 +29,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -51,6 +53,8 @@ class ObservabilityEndpointsTest {
     private PeerStateObserver peerState;
     private ObservabilityServer server;
     private HttpClient http;
+    /** What {@code /reload} returns; a test sets it to the outcome it wants to see served. */
+    private volatile ReloadReport report = new ReloadReport(List.of());
 
     @BeforeEach
     void setUp() throws IOException {
@@ -60,7 +64,7 @@ class ObservabilityEndpointsTest {
         peerState.registerMetrics(registry);
         server = ObservabilityServer.start(
                 ObservabilityConfig.builder().bindAddress("127.0.0.1").port(0).build(),
-                NodeEndpoints.router(SELF, health, peerState, registry));
+                NodeEndpoints.router(SELF, health, peerState, registry, () -> report));
         http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
     }
 
@@ -77,7 +81,7 @@ class ObservabilityEndpointsTest {
         final MetricRegistry registry = new MetricRegistry();
         assertEquals(null, ObservabilityServer.start(
                 ObservabilityConfig.builder().enabled(false).build(),
-                NodeEndpoints.router(SELF, health, peerState, registry)));
+                NodeEndpoints.router(SELF, health, peerState, registry, () -> report)));
     }
 
     @Test
@@ -173,11 +177,54 @@ class ObservabilityEndpointsTest {
     }
 
     @Test
-    @DisplayName("A non-GET method is refused on every endpoint")
-    void nonGetIsRefused() throws Exception {
+    @DisplayName("/reload reports what each source did, and 200 when the set went in")
+    void reloadReportsWhatWasApplied() throws Exception {
+        report = new ReloadReport(List.of(
+                new ReloadReport.Entry("/etc/discas/members.properties",
+                        ReloadReport.Outcome.APPLIED, "3 members"),
+                new ReloadReport.Entry("/etc/discas/acl.properties",
+                        ReloadReport.Outcome.UNCHANGED, "byte-identical")));
+
+        final HttpResponse<String> response = post("/reload");
+
+        assertEquals(200, response.statusCode(), "Applied and unchanged are both acceptances");
+        final String body = response.body();
+        assertTrue(body.contains("\"status\":\"applied\""), body);
+        assertTrue(body.contains("\"source\":\"/etc/discas/members.properties\""), body);
+        assertTrue(body.contains("\"outcome\":\"applied\""), body);
+        assertTrue(body.contains("\"outcome\":\"unchanged\""), body);
+    }
+
+    @Test
+    @DisplayName("/reload is a 400 when one source was refused: nothing was applied")
+    void reloadRefusedIsAClientError() throws Exception {
+        // A 4xx rather than a 503 because retrying without editing the file changes nothing, and
+        // an operator reading the entry can tell which file to go and fix.
+        report = new ReloadReport(List.of(
+                new ReloadReport.Entry("/etc/discas/acl.properties",
+                        ReloadReport.Outcome.FAILED, "unknown operation 'writ'"),
+                new ReloadReport.Entry("/etc/discas/members.properties",
+                        ReloadReport.Outcome.NOT_APPLIED, "ready, and held back")));
+
+        final HttpResponse<String> response = post("/reload");
+
+        assertEquals(400, response.statusCode());
+        final String body = response.body();
+        assertTrue(body.contains("\"status\":\"rejected\""), body);
+        assertTrue(body.contains("\"outcome\":\"failed\""), body);
+        assertTrue(body.contains("\"outcome\":\"not-applied\""), body);
+        assertTrue(body.contains("unknown operation 'writ'"), body);
+    }
+
+    @Test
+    @DisplayName("A method other than the endpoint's own is refused")
+    void theWrongMethodIsRefused() throws Exception {
         assertEquals(405, post("/metrics").statusCode());
         assertEquals(405, post("/health").statusCode());
         assertEquals(405, post("/ready").statusCode());
+        // ...and the other way round for the one endpoint that changes something: a GET that
+        // reloads is a GET something will eventually retry, prefetch or cache.
+        assertEquals(405, get("/reload").statusCode());
     }
 
     @Test

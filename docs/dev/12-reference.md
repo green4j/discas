@@ -30,7 +30,7 @@ Under `io.github.green4j.discas`:
 | `common/transport/tls` | contexts, reloadable managers, cert identities, rotation |
 | `common/transport/security` | the two channel-security seams and their plaintext implementations |
 | `common/http/server` | `HttpServer` (its javadoc is the manual), routers, query parser |
-| `common/io` | `FileWatchDaemon`, `WatchedFileSource`, reload observers |
+| `common/io` | `ReloadableFiles`, `ReloadableFileSource`, `PeriodicDaemon`, reload observers |
 | `common/dump` | the dump file format |
 | `common/operator` | `OperatorState`, `OperatorAttention`, `OperatorGroup` |
 | `common/metrics`, `common/observability` | registry, Prometheus text, the shared observability server |
@@ -54,11 +54,11 @@ Under `io.github.green4j.discas`:
 | `ClientTransport` | client | `TcpClientTransport`, `InProcessClientTransport` |
 | `ClientIngress` / `ResponseSink` | common | the node's client handler / whichever transport created it |
 | `NodeObserver` / `ClientObserver` / `ReloadObserver` | node / client / common | logging, metrics, peer-state and stderr decorators |
-| `Members<T>` | node | `FileMembers` (hot-reloaded), `InMemoryMembers` |
+| `Members<T>` | node | `FileMembers` (reloadable), `InMemoryMembers` |
 | `ClientAuthenticator` | common | `AllowAll`, `Token`, mTLS |
 | `ClientAcl` | node | `FileClientAcl`, `InMemoryClientAcl` |
 | `PeerChannelSecurity` / `ClientChannelSecurity` | common | plaintext passthrough, `SSLEngine`-backed |
-| `Reloadable<T>` | common | `WatchedFileSource` -- one contract for every watched file |
+| `Reloadable<T>` | common | `ReloadableFileSource` -- one contract for every file re-read on request |
 | `EventLoop.IoDriver` | common | both transports and the HTTP server's workers |
 | `ByteContent` | common | HTTP response bodies, zero-copy |
 

@@ -4,13 +4,14 @@
 surface on `127.0.0.1:8500`. It exists so a caller that is not on the JVM can use discas with
 nothing but `curl`.
 
-Three route prefixes, and that is the whole surface:
+Four route prefixes, and that is the whole surface:
 
 | | |
 |---|---|
 | `/v1/kv/{key}` | read, write, compare-and-set, delete, list, watch -> [2](02-kv.md), [3](03-watch.md) |
 | `/v1/lock/{key}` | acquire, renew, release, inspect -> [4](04-locks.md) |
 | `/v1/agent/health` | is this **agent process** alive -> [5](05-running.md#health) |
+| `/v1/agent/reload` | re-read the nodes file and TLS material -> [5](05-running.md#finding-the-cluster) |
 
 ## Contents
 

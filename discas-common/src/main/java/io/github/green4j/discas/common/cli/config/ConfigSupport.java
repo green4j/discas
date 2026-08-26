@@ -108,7 +108,7 @@ public final class ConfigSupport {
         if (colon <= 0 || colon == hostPort.length() - 1) {
             throw new IllegalArgumentException("Bad " + what + " address '" + hostPort + "', expected host:port");
         }
-        final String host = hostPort.substring(0, colon);
+        final String host = hostPort.substring(0, colon).trim();
         final int port = parsePort(hostPort.substring(colon + 1), what, allowZeroPort);
         return new InetSocketAddress(host, port);
     }
@@ -154,7 +154,7 @@ public final class ConfigSupport {
 
     /**
      * Read and parse a java-properties members file ({@code node.<id> = host:port}, one member per
-     * line) into an ordered address view. This is the same format {@code FileMembers} watches, so a
+     * line) into an ordered address view. This is the same format {@code FileMembers} reads, so a
      * single file can drive both a node's membership and an agent's target-node list. {@code what}
      * names the field for errors ({@code "members"} for a node, {@code "nodes"} for the agent).
      * Throws {@link IllegalArgumentException} if the file cannot be read or parsed, or has no members.
@@ -171,7 +171,7 @@ public final class ConfigSupport {
 
     /**
      * Parse the raw bytes of a members file (java properties, {@code node.<id> = host:port}) into an
-     * ordered address view. Used by {@link #parseMembersFile} and by hot-reload watchers that already
+     * ordered address view. Used by {@link #parseMembersFile} and by reloadable sources that already
      * hold the file bytes. {@code what} names the field for errors.
      */
     public static Map<NodeId, InetSocketAddress> parseMembersProperties(final byte[] bytes, final String what) {

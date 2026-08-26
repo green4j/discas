@@ -13,7 +13,11 @@ package io.github.green4j.discas.client.lock;
  * there to be inspected, which is what makes a takeover auditable.
  */
 public enum LockInfoStatus {
-    /** No lock on the key: absent, tombstoned, or holding a release marker. */
+    /**
+     * No lock on the key: absent, tombstoned, or holding a release marker. A marker keeps
+     * {@link LockInfoResult#info()} readable -- who released it, and at which generation -- so
+     * this status alone does not mean there is nothing to look at.
+     */
     UNLOCKED,
     /** A lock record whose lease has not run out. */
     LOCKED,

@@ -21,8 +21,6 @@ import org.junit.jupiter.params.provider.CsvSource;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileTime;
-import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -85,9 +83,8 @@ class ClientAclRevisionMatrixTest {
             throws Exception {
         // Two nodes, each with the policy file on its own disk -- which is what a cluster is, and
         // the whole of "mid-rollout": the edit has landed on one node and not yet on the other.
-        // (One file read by two loaders would not model it: both watch it, so the shared file-watch
-        // daemon reloads both the moment it changes, and on a platform whose WatchService is
-        // event-driven it does so before the next line of the test runs.)
+        // (One file read by two loaders would not model it: a reload would offer the change to
+        // both, and the one meant to be behind would not be.)
         final Path staleFile = Files.createDirectory(dir.resolve("stale")).resolve("acl.conf");
         final Path freshFile = Files.createDirectory(dir.resolve("fresh")).resolve("acl.conf");
         Files.writeString(staleFile, startingPolicy(edit));
@@ -213,16 +210,8 @@ class ClientAclRevisionMatrixTest {
         });
     }
 
-    /**
-     * Write and make the change visible to the loader, which skips a file whose size and
-     * last-modified are what they were. Setting the timestamp forward is deterministic where
-     * sleeping for the filesystem's granularity is only likely.
-     */
     private static void rewrite(final Path file, final String contents) throws Exception {
-        final FileTime before = Files.getLastModifiedTime(file);
         Files.writeString(file, contents);
-        Files.setLastModifiedTime(file,
-                FileTime.fromMillis(before.toMillis() + Duration.ofSeconds(1).toMillis()));
     }
 
     private static HashedBytes key(final String text) {

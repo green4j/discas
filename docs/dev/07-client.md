@@ -37,8 +37,16 @@ about *this coordinator*:
 **The exception is a version-fenced write**, which keeps walking coordinators even on `UNAVAILABLE`:
 a duplicate provably cannot apply, so re-sending is free. That is the whole payoff of the fence.
 
+**Silence is decided by the same rule, with less to go on.** A coordinator that answers names the
+phase it failed in, which is what lets even an unfenced write move on `NOT_READY`. A coordinator
+that goes quiet past `perAttemptTimeout`, or whose connection drops, names nothing -- it may be
+driving a round right now -- so only a fenced write and a read move on. An unfenced write that had
+already reached the wire ends there with `RequestFailedException.Cause.INDETERMINATE`, immediately
+rather than at the deadline: more waiting cannot turn an unknown outcome into a known one. A
+request the client never managed to send is safe whatever it is, and still moves.
+
 A dropped connection is not waited out -- the transport reports it and every request riding on it
-moves at once, rather than each discovering the loss when its own timer expires.
+is decided at once, rather than each discovering the loss when its own timer expires.
 
 ## Write determinism
 
@@ -105,14 +113,65 @@ Two things are worth internalising:
   derives an offset from the coordinator's clock reported in the hello response, so two clients
   measure against the same reference; each also detects a step in its own clock by comparing wall
   and monotonic deltas, and drops a stale offset rather than applying it.
+- **The owner id is a correctness argument, not a label**, which is why the acquire methods require
+  one and no overload invents it. An acquire is a write whose outcome can be unknown, and the owner
+  id is the only field of the record the caller chooses *before* the write -- the token is minted
+  inside the call and the generation is not knowable in advance -- so it is the only thing a later
+  read can match the caller against. Its precondition is uniqueness among concurrent holders.
+
+`recoverLock(key, ownerId)` is what that buys: it reads the key and, if the live record is the
+caller's, rebuilds a `DistributedLock` from it with the record's own token and generation, so the
+recovered lock releases and renews as the original would. The remaining lease is anchored on a
+monotonic reading taken before the read, which understates it -- the same direction a fresh acquire
+rounds towards.
+
+The split between `HELD_BY_SELF` and `recoverLock` is deliberate and is the one place this design
+chose safety over convenience. `tryLock` could hand back the rebuilt lock directly, but then two
+components that merely shared an owner id would each be given the same lease and mutual exclusion
+would be lost silently -- and the ids people pick (`"worker-3"`) make that a plausible mistake. So
+the acquire path reports the fact and hands back nothing, and the recovery path, which a caller only
+reaches by naming the operation, is where the id is trusted. `lockAttempt` also terminates on
+`HELD_BY_SELF` rather than polling: no later attempt can change it, and the caller is the one who
+would be renewing the lease in the way.
 
 Every remote lock operation is a CAS conditioned on the holder's `LockToken`, so a displaced
 holder's release or renew fails instead of stomping its successor. Both answer with a
-`LockWriteResult`, not a boolean: `HELD_BY_OTHER`, `EXPIRED`, `NOT_HELD`, `NOT_LOCK_RECORD` and
+`LockWriteResult`, not a boolean: `HELD_BY_OTHER`, `EXPIRED`, `NOT_HELD`, `ALREADY_RELEASED`,
+`NOT_LOCK_RECORD` and
 `CONTENDED` call for different reactions, and the refusal carries the record it saw so a displaced
 holder learns who displaced it from the same round trip. A lapsed lease is renewable by nobody --
 from the moment it ran out a waiter was entitled to take over -- but is still releasable by its own
 token, because writing the marker is the right cleanup either way.
+
+The release marker carries the tenancy it ended -- owner, token, acquire time, generation -- with
+only the lease zeroed, and `isReleased()` is that zero and nothing else. It used to blank the owner
+and the token, which cost the same thing an anonymous acquire cost: a retried release could only be
+told "no lock here", the answer a key that was never locked gives. Keeping the token buys
+`ALREADY_RELEASED`, so a retry after a lost answer learns its first attempt landed; keeping the
+owner keeps an `UNLOCKED` key auditable, the same reason `EXPIRED` keeps its record. What it cannot
+buy is an answer once another holder has come and gone, because a record remembers only its latest
+tenant -- `NOT_HELD` is the honest reply there, and is documented as such.
+
+The lock surface is kept to what a caller can act on, and four things were dropped for failing that
+test. `Lock.validate()` asked the cluster "is this still mine?" -- an honest question with a
+dishonest use, because the answer is stale on arrival, and having it in the interface made
+check-then-act the easy thing to write when `fencingToken()` is the thing that actually holds.
+`LockInfoView` split a holder's view into acquire-time and current, but the only field that ever
+differed between the two was the wall-clock lease deadline, which by its own javadoc is the wrong
+clock for its holder; take that away and the split collapses, so both went and `remainingLease()` is
+the one lease reading a holder gets. `LockAcquireResult.token()` and its `lockInfo()` duplicated
+`lock().token()` and the lock's own snapshot, so the survivor was renamed `observed()` and now means
+one thing -- the record that stood in the way -- and is null on success. And `lock(key, ttl, ZERO,
+owner)` is routed into `tryLock` rather than through the waiting path, so the two forms cannot drift:
+before, the zero-wait case spent an extra read to answer `TIMED_OUT` where a single attempt says
+`HELD_BY_OTHER` or `HELD_BY_SELF`.
+
+The layout version stays at 1 deliberately. Nothing about the fields changed, only which values go
+in them, so a build that predates this decodes the marker fine and merely applies the older,
+stricter `isReleased()`. It then reads the record as a lock with a lease of zero, which no clock is
+behind, so the key is still free to acquire -- the property `LockValueCodecTest` pins. Bumping the
+version would have been worse: an older reader would decode a new marker to `null` and report
+`NOT_LOCK_RECORD`, which blocks acquires outright instead of degrading a status.
 
 ## Source map
 
@@ -146,8 +205,10 @@ token, because writing the marker is the right cleanup either way.
 - **A new `ClientErrorCode` needs a failover decision, explicitly.** The question is only ever
   "does this say something about *this* coordinator, and is the outcome known" -- get that wrong and
   a caller either loses availability or replays a write it should not.
-- **Never fail over an unfenced write on `UNAVAILABLE`.** That is the duplicate-apply hazard, and it
-  is silent.
+- **Never move an unfenced write that has reached the wire.** Not on `UNAVAILABLE`, not on silence,
+  not on a dropped connection. That is the duplicate-apply hazard, and it is silent. The rule lives
+  in two places for the two kinds of failure -- `worthAnotherCoordinator` for an answered one,
+  `mayMoveToAnotherCoordinator` for no answer at all -- and a new retry path needs one of them.
 - **Do not add a value-compared CAS.** See [3. CASPaxos](03-caspaxos.md#version-fenced-cas-and-no-value-compared-cas).
 - **Do not let `scan` return values.** The guarantee it can honestly make is about key existence;
   values would imply a snapshot that does not exist.

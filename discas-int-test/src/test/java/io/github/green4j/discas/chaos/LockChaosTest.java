@@ -7,7 +7,7 @@
 
 package io.github.green4j.discas.chaos;
 
-import io.github.green4j.discas.client.lock.DistributedLock;
+import io.github.green4j.discas.client.lock.Lock;
 import io.github.green4j.discas.client.lock.LockAcquireResult;
 import io.github.green4j.discas.client.lock.LockAcquireStatus;
 import io.github.green4j.discas.client.lock.LockInfoResult;
@@ -42,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Chaos coverage for {@link DistributedLock}: multi-client contention against
+ * Chaos coverage for {@link Lock}: multi-client contention against
  * a TCP+FileWal cluster while nodes are restarted at random.
  *
  * <p>The at-most-one-holder invariant is enforced via {@link ChaosLockMonitor}:
@@ -56,11 +56,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *   <li>Workers progress (each worker successfully acquires at least once on
  *       any non-trivial run, except possibly under heavy LONG chaos).</li>
  *   <li>Most workload errors are transient (Node closing / timed out / shutdown
- *       categories from {@link ChaosAssertions#isTransientChaosError}).</li>
+ *       categories from {@link ChaosAssertions}).</li>
  * </ul>
  */
 @Tag("chaos")
-@DisplayName("DistributedLock chaos -- multi-client contention under nemesis")
+@DisplayName("Distributed lock chaos -- multi-client contention under nemesis")
 @Timeout(value = 5, unit = TimeUnit.MINUTES)
 class LockChaosTest {
     private static final TcpTransportConfig DEFAULT_PEER_TRANSPORT_CONFIG = TcpTransportConfig.defaults();
@@ -129,7 +129,7 @@ class LockChaosTest {
                         while (!stop.get() && System.nanoTime() - deadlineNanos < 0) {
                             final DisCasClient client = harness.client(workerIdx % clientCount);
                             final String key = lockKeys.get(rng.nextInt(lockKeys.size()));
-                            DistributedLock lock = null;
+                            Lock lock = null;
                             try {
                                 final LockAcquireResult res = client
                                         .lock(key, leaseTtl, acquireWait, ownerId)
@@ -231,7 +231,7 @@ class LockChaosTest {
                             key, acquireTtl, acquireWait, "owner-A")
                     .get(getWaitSeconds, TimeUnit.SECONDS);
             assertEquals(LockAcquireStatus.ACQUIRED, acquired.status());
-            final DistributedLock lockA = acquired.lock();
+            final Lock lockA = acquired.lock();
 
             harness.restartAllSequentially(fullRecycleOutage);
             // Await cluster quiescence on the lock key rather than sleeping --

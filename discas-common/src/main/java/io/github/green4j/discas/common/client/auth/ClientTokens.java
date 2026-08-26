@@ -9,6 +9,8 @@ package io.github.green4j.discas.common.client.auth;
 
 import io.github.green4j.discas.common.identity.ClientId;
 
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,6 +38,46 @@ public final class ClientTokens {
     public List<TokenRecord> records(final ClientId clientId) {
         final List<TokenRecord> records = byClient.get(clientId);
         return records == null ? List.of() : records;
+    }
+
+    /**
+     * One line for the reload report: which clients have credentials, how many each, and when the
+     * last one of each runs out. Sorted by client, so two reports can be compared.
+     *
+     * <p><b>Never the credential.</b> A token file is the secret itself -- salt, hash, iterations --
+     * and a log is read by more people than the file is. What is here is what an operator needs to
+     * confirm a rotation landed: the client is present, it now has two records rather than one, and
+     * the far one expires when they expect. Anyone who can already see the log learns nothing that
+     * lets them authenticate as anybody.
+     */
+    public String summary() {
+        if (byClient.isEmpty()) {
+            return "no clients: every client is refused";
+        }
+        final List<ClientId> ids = new ArrayList<>(byClient.keySet());
+        Collections.sort(ids);
+        final StringBuilder sb = new StringBuilder();
+        sb.append(ids.size()).append(ids.size() == 1 ? " client: " : " clients: ");
+        for (int i = 0; i < ids.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            final List<TokenRecord> records = byClient.get(ids.get(i));
+            sb.append(ids.get(i).value())
+                    .append(" (").append(records.size())
+                    .append(records.size() == 1 ? " token, " : " tokens, ")
+                    .append("last expires ").append(lastExpiry(records)).append(')');
+        }
+        return sb.toString();
+    }
+
+    /** The furthest expiry among {@code records}: the moment this client stops being able to connect. */
+    private static String lastExpiry(final List<TokenRecord> records) {
+        long latest = Long.MIN_VALUE;
+        for (final TokenRecord record : records) {
+            latest = Math.max(latest, record.notAfterEpochMs());
+        }
+        return records.isEmpty() ? "never" : Instant.ofEpochMilli(latest).toString();
     }
 
     @Override

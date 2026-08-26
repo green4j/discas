@@ -7,12 +7,11 @@
 
 package io.github.green4j.discas.common.client.auth;
 
-import io.github.green4j.discas.common.io.FileWatchDaemon;
+import io.github.green4j.discas.common.io.PeriodicDaemon;
 
 import io.github.green4j.discas.common.io.ReloadObserver;
 
 import java.time.Duration;
-import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -24,16 +23,18 @@ import java.util.function.Supplier;
  * a {@link ClientTokens} snapshot, and this store handles periodic refresh, change-gating
  * ({@code equals}), and replay-on-subscribe -- the same contract as the file-backed stores.
  * <p>
- * The periodic tick runs on the shared {@link FileWatchDaemon} (no new thread). A refresh is
- * skipped if the previous one ran less than {@code interval} ago, so it never fetches faster
- * than requested even when the daemon wakes early for unrelated filesystem events.
+ * Periodic rather than on request, unlike the file-backed stores: a secret manager has to be asked
+ * before it will answer, and nobody on this side can know when its answer changed. The tick runs on
+ * the shared {@link PeriodicDaemon} (no new thread). A refresh is skipped if the previous one ran
+ * less than {@code interval} ago, so it never fetches faster than requested even if the daemon
+ * should ever run the check early.
  */
 public final class RefreshingClientTokenStore implements ClientTokenStore, AutoCloseable {
 
     private final Supplier<ClientTokens> fetch;
     private final long intervalNanos;
     private final CopyOnWriteArrayList<Consumer<ClientTokens>> listeners = new CopyOnWriteArrayList<>();
-    private final FileWatchDaemon.Registration registration;
+    private final PeriodicDaemon.Registration registration;
 
     private final ReloadObserver observer;
 
@@ -58,8 +59,8 @@ public final class RefreshingClientTokenStore implements ClientTokenStore, AutoC
             throw new IllegalStateException("Initial token fetch returned null");
         }
         this.lastFetchNanos = System.nanoTime();
-        this.registration = FileWatchDaemon.shared().register(
-                List.of(), interval, this::refresh, this.observer);
+        this.registration = PeriodicDaemon.shared().register(
+                "client tokens", interval, this::refresh, this.observer);
     }
 
     @Override
@@ -101,11 +102,14 @@ public final class RefreshingClientTokenStore implements ClientTokenStore, AutoC
             return; // keep the last good value
         }
         if (candidate == null || candidate.equals(current)) {
+            // Silent: every interval fetches, so a report here would be a line in the log every
+            // interval for ever. Nobody asked a question -- there is no file anyone can touch.
             return; // value gate: nothing new
         }
         current = candidate;
         for (final Consumer<ClientTokens> listener : listeners) {
             listener.accept(candidate);
         }
+        observer.reloaded("client tokens", "applied -- " + candidate.summary());
     }
 }

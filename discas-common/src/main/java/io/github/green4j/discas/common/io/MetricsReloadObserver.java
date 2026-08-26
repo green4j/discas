@@ -28,31 +28,32 @@ import java.time.Instant;
 public class MetricsReloadObserver extends DelegatingReloadObserver {
 
     private final Counter reloads;
+    private final Counter reloadsUnchanged;
     private final Counter reloadFailures;
-    private final Counter watchUnavailable;
     private final Counter checkFailures;
     private final Counter expiryWarnings;
 
     /**
-     * Earliest expiry seen, in unix seconds; {@code 0} until something warns. Written from the
-     * file-watch daemon thread and read at scrape time, hence volatile.
+     * Earliest expiry seen, in unix seconds; {@code 0} until something warns. Written from whichever
+     * thread reported it and read at scrape time, hence volatile.
      */
     private volatile long earliestExpirySeconds;
 
     public MetricsReloadObserver(final MetricRegistry registry, final ReloadObserver delegate) {
         super(delegate);
         reloads = registry.counter("discas_reloads_total",
-                "Background reloads that succeeded.");
+                "Reloads that were applied.");
+        reloadsUnchanged = registry.counter("discas_reloads_unchanged_total",
+                "Reloads of a source that held what was already in force, so nothing "
+                        + "was applied.");
         reloadFailures = registry.counter("discas_reload_failures_total",
-                "Background reloads that failed; the last good value was retained.");
-        watchUnavailable = registry.counter("discas_reload_watch_unavailable_total",
-                "Times a filesystem watch could not be established, degrading to the safety poll.");
+                "Reloads that were refused; the last good value was retained.");
         checkFailures = registry.counter("discas_reload_check_failures_total",
-                "Scheduled reload checks that threw.");
+                "Checks around a source that threw.");
         expiryWarnings = registry.counter("discas_reload_material_expiring_total",
-                "Times watched material was reported as expiring with no replacement.");
+                "Times loaded material was reported as expiring with no replacement.");
         registry.gauge("discas_reload_material_expires_seconds",
-                "Unix seconds at which watched material expires; 0 when nothing has warned.",
+                "Unix seconds at which loaded material expires; 0 when nothing has warned.",
                 () -> earliestExpirySeconds);
     }
 
@@ -63,15 +64,15 @@ public class MetricsReloadObserver extends DelegatingReloadObserver {
     }
 
     @Override
-    public void reloadFailed(final String source, final Throwable error) {
-        reloadFailures.increment();
-        super.reloadFailed(source, error);
+    public void reloadUnchanged(final String source, final String detail) {
+        reloadsUnchanged.increment();
+        super.reloadUnchanged(source, detail);
     }
 
     @Override
-    public void watchUnavailable(final String source, final Throwable error) {
-        watchUnavailable.increment();
-        super.watchUnavailable(source, error);
+    public void reloadFailed(final String source, final Throwable error) {
+        reloadFailures.increment();
+        super.reloadFailed(source, error);
     }
 
     @Override
@@ -84,7 +85,7 @@ public class MetricsReloadObserver extends DelegatingReloadObserver {
     public void materialExpiring(final String source, final Instant expiresAt) {
         expiryWarnings.increment();
         final long seconds = expiresAt == null ? 0L : expiresAt.getEpochSecond();
-        // Keep the soonest deadline: with several watched sources, the one that expires first is
+        // Keep the soonest deadline: with several sources loaded, the one that expires first is
         // the one that takes the cluster down first, and is therefore the one worth alerting on.
         final long current = earliestExpirySeconds;
         if (seconds > 0L && (current == 0L || seconds < current)) {

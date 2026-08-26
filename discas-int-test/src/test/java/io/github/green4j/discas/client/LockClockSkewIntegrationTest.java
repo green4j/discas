@@ -156,7 +156,7 @@ class LockClockSkewIntegrationTest {
         final DisCasClient honest = client("honest", 0L);
 
         final LockAcquireResult acquired =
-                lagging.tryLock(TestBytes.utf8("job/lagging"), LEASE).get(10, TimeUnit.SECONDS);
+                lagging.tryLock(TestBytes.utf8("job/lagging"), LEASE, "lagging").get(10, TimeUnit.SECONDS);
         assertEquals(LockAcquireStatus.ACQUIRED, acquired.status());
 
         // Uncorrected, this holder would have written a deadline 45 minutes in the past, and this
@@ -167,7 +167,7 @@ class LockClockSkewIntegrationTest {
                 "A lock held under a lagging clock must not read as expired to anyone else");
 
         final LockAcquireResult stolen =
-                honest.tryLock(TestBytes.utf8("job/lagging"), LEASE).get(10, TimeUnit.SECONDS);
+                honest.tryLock(TestBytes.utf8("job/lagging"), LEASE, "honest").get(10, TimeUnit.SECONDS);
         assertEquals(LockAcquireStatus.HELD_BY_OTHER, stolen.status(),
                 "Two holders at once is the failure this correction exists to prevent");
     }
@@ -179,7 +179,7 @@ class LockClockSkewIntegrationTest {
         final DisCasClient honest = client("honest", 0L);
 
         assertEquals(LockAcquireStatus.ACQUIRED,
-                racing.tryLock(TestBytes.utf8("job/racing"), LEASE).get(10, TimeUnit.SECONDS)
+                racing.tryLock(TestBytes.utf8("job/racing"), LEASE, "racing").get(10, TimeUnit.SECONDS)
                         .status());
 
         final LockInfoResult seen =
@@ -200,7 +200,8 @@ class LockClockSkewIntegrationTest {
         final DisCasClient lagging = client("lagging-holder", -SKEW.toMillis());
 
         final LockAcquireResult acquired =
-                lagging.tryLock(TestBytes.utf8("job/remaining"), LEASE).get(10, TimeUnit.SECONDS);
+                lagging.tryLock(TestBytes.utf8("job/remaining"), LEASE, "lagging-holder")
+                        .get(10, TimeUnit.SECONDS);
         assertEquals(LockAcquireStatus.ACQUIRED, acquired.status());
 
         // The holder's own clock is 45 minutes behind the cluster's, so the deadline it stored --

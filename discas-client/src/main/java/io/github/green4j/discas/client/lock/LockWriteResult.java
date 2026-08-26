@@ -32,9 +32,17 @@ public final class LockWriteResult {
         return new LockWriteResult(LockWriteStatus.APPLIED, null);
     }
 
-    /** The key holds no lock -- absent, tombstoned, or a release marker. */
+    /** The key holds no lock of the caller's -- absent, tombstoned, or somebody else's marker. */
     public static LockWriteResult notHeld() {
         return new LockWriteResult(LockWriteStatus.NOT_HELD, null);
+    }
+
+    /**
+     * This caller's own release had already landed; {@code observed} is the marker it wrote, so
+     * the generation the lock ran under is still readable from it.
+     */
+    public static LockWriteResult alreadyReleased(final LockInfo observed) {
+        return new LockWriteResult(LockWriteStatus.ALREADY_RELEASED, observed);
     }
 
     /** Someone else holds the key; {@code observed} is their record. */
@@ -80,7 +88,8 @@ public final class LockWriteResult {
      * The lock record the round found on the key, or {@code null} when there was none to report
      * ({@link LockWriteStatus#APPLIED}, {@link LockWriteStatus#NOT_HELD},
      * {@link LockWriteStatus#NOT_LOCK_RECORD}, and a {@link LockWriteStatus#CONTENDED} whose
-     * winner is not a lock record).
+     * winner is not a lock record). On {@link LockWriteStatus#ALREADY_RELEASED} it is a release
+     * marker: no lease left to read, but the owner and the generation still say what was let go.
      */
     public LockInfo observed() {
         return observed;

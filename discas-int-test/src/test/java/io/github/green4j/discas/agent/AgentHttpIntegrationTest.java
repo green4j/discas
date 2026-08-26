@@ -52,6 +52,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -544,6 +545,66 @@ class AgentHttpIntegrationTest {
         // A bad ttl is rejected before the token is even used.
         assertEquals(400, putWithHeader(
                 "/v1/lock/renew-guard?renew&ttl=0", "", "X-DisCas-Lock-Token", token).statusCode());
+    }
+
+    @Test
+    void acquireRequiresAnOwner() throws Exception {
+        awaitClusterReady("__ready_probe__");
+
+        // Rejected rather than filled in with a generated id: over HTTP the response to an acquire
+        // is exactly what a dropped connection takes away, and a name the caller never chose is no
+        // way back to the lock afterwards.
+        final HttpResponse<String> noOwner = put("/v1/lock/needs-owner?ttl=30", "");
+        assertEquals(400, noOwner.statusCode(), noOwner.body());
+        assertEquals(400, put("/v1/lock/needs-owner?ttl=30&owner=", "").statusCode());
+        assertEquals(400, put("/v1/lock/needs-owner?recover", "").statusCode());
+    }
+
+    @Test
+    void recoverHandsBackTheLockAnAcquireMayHaveTakenSilently() throws Exception {
+        awaitClusterReady("__ready_probe__");
+
+        // Stands in for an acquire whose response was lost: the record is committed, and the
+        // caller is holding no token.
+        final HttpResponse<String> acquired = put("/v1/lock/recoverable?ttl=30&owner=w1", "");
+        assertEquals(200, acquired.statusCode(), acquired.body());
+        final String token = extract(acquired.body(), "\"token\":\"", "\"");
+
+        final HttpResponse<String> recovered = put("/v1/lock/recoverable?recover&owner=w1", "");
+        assertEquals(200, recovered.statusCode(), recovered.body());
+        assertTrue(recovered.body().contains("\"acquired\":true"), recovered.body());
+        assertEquals(token, extract(recovered.body(), "\"token\":\"", "\""),
+                "recovery must return the standing lease, not mint a new one");
+
+        // A second acquire under the same name takes nothing and is told so precisely.
+        final HttpResponse<String> again = put("/v1/lock/recoverable?ttl=30&owner=w1", "");
+        assertTrue(again.body().contains("\"status\":\"HELD_BY_SELF\""), again.body());
+        assertTrue(again.body().contains("\"acquired\":false"), again.body());
+
+        final HttpResponse<String> other = put("/v1/lock/recoverable?recover&owner=w2", "");
+        assertTrue(other.body().contains("\"status\":\"HELD_BY_OTHER\""), other.body());
+
+        final HttpResponse<String> nothing = put("/v1/lock/never-acquired?recover&owner=w1", "");
+        assertTrue(nothing.body().contains("\"status\":\"NOT_HELD\""), nothing.body());
+    }
+
+    @Test
+    void aLockReadingNeverCarriesTheHoldersToken() throws Exception {
+        awaitClusterReady("__ready_probe__");
+
+        final HttpResponse<String> acquired = put("/v1/lock/private-token?ttl=30&owner=w1", "");
+        assertEquals(200, acquired.statusCode(), acquired.body());
+
+        // Anyone may ask these two, so neither may answer with the thing release and renew are
+        // conditioned on. The owner and the generation are the readable part; the way back to a
+        // token is ?recover, which at least asks the caller to claim the name.
+        final HttpResponse<String> info = get("/v1/lock/private-token");
+        assertTrue(info.body().contains("\"owner\":\"w1\""), info.body());
+        assertFalse(info.body().contains("\"token\""), info.body());
+
+        final HttpResponse<String> refused = put("/v1/lock/private-token?ttl=30&owner=w2", "");
+        assertTrue(refused.body().contains("\"status\":\"HELD_BY_OTHER\""), refused.body());
+        assertFalse(refused.body().contains("\"token\""), refused.body());
     }
 
     /**

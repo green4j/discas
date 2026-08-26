@@ -18,8 +18,9 @@ import io.github.green4j.discas.common.io.Closeables;
 import io.github.green4j.discas.common.io.LoggingReloadObserver;
 import io.github.green4j.discas.common.io.MetricsReloadObserver;
 import io.github.green4j.discas.common.io.ReloadObserver;
-import io.github.green4j.discas.common.io.WatchedFile;
-import io.github.green4j.discas.common.io.WatchedFileSource;
+import io.github.green4j.discas.common.io.ReloadableFileSource;
+import io.github.green4j.discas.common.io.ReloadableFiles;
+import io.github.green4j.discas.common.io.ReloadReport;
 import io.github.green4j.discas.common.http.server.HttpServer;
 import io.github.green4j.discas.common.http.server.HttpServer.AcceptHandler;
 import io.github.green4j.discas.common.http.server.PrefixRouter;
@@ -54,6 +55,7 @@ import java.security.KeyStore;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -76,7 +78,6 @@ public final class DisCasAgent implements AutoCloseable {
 
     private final HttpServer server;
     private final ObservabilityServer observability; // null when observability is disabled
-    private final WatchedFileSource<Map<NodeId, InetSocketAddress>> nodesSource; // null in inline mode
     private final List<AutoCloseable> toClose;
     /** Held so a close failure has somewhere to go that is not {@code System.err}. */
     private final OperatorAttention attention;
@@ -84,12 +85,10 @@ public final class DisCasAgent implements AutoCloseable {
 
     private DisCasAgent(final HttpServer server,
                         final ObservabilityServer observability,
-                        final WatchedFileSource<Map<NodeId, InetSocketAddress>> nodesSource,
                         final List<AutoCloseable> toClose,
                         final OperatorAttention attention) {
         this.server = server;
         this.observability = observability;
-        this.nodesSource = nodesSource;
         this.toClose = toClose;
         this.attention = attention;
     }
@@ -140,15 +139,14 @@ public final class DisCasAgent implements AutoCloseable {
 
     /**
      * Build the client + HTTP server for {@code cfg} and start listening. The returned agent owns
-     * both (plus the optional nodes-file watcher and any TLS resources) and is closed to stop it.
+     * both (plus the optional nodes-file source and any TLS resources) and is closed to stop it.
      */
     public static DisCasAgent start(final DisCasAgentConfig cfg) throws Exception {
         // Client + TLS resources (material source, rotation, executor) and the optional nodes-file
-        // watcher live as long as the agent; the agent owns and closes them (reverse acquisition
+        // source live as long as the agent; the agent owns and closes them (reverse acquisition
         // order). Closed here if start fails before the agent is built.
         final List<AutoCloseable> toClose = new ArrayList<>();
         final ReloadableClient clientHolder;
-        WatchedFileSource<Map<NodeId, InetSocketAddress>> nodesSource = null;
 
         // Observability, composed by decoration exactly as DisCasNodeStarter does it, so each
         // concern stays independent and any of them can be dropped from a chain. Built first
@@ -206,13 +204,14 @@ public final class DisCasAgent implements AutoCloseable {
                     clientObserver);
             toClose.add(clientHolder);
             if (cfg.nodesFromFile()) {
-                // Hot-reload the target-node list: on each change the holder rebuilds and swaps the
-                // client. WatchedFileSource keeps the last good value if a reload fails to parse.
-                nodesSource = new WatchedFileSource<>(
-                        List.of(cfg.nodesFile.toAbsolutePath()),
-                        WatchedFile.DEFAULT_POLL_INTERVAL,
-                        contents -> ConfigSupport.parseMembersProperties(contents.get(0), "nodes"),
-                        reload);
+                // The target-node list: on each reload that changes it the holder rebuilds and
+                // swaps the client. The source keeps the last good value if a reload is refused.
+                final ReloadableFileSource<Map<NodeId, InetSocketAddress>> nodesSource =
+                        new ReloadableFileSource<>(
+                                List.of(cfg.nodesFile.toAbsolutePath()),
+                                contents -> ConfigSupport.parseMembersProperties(contents.get(0), "nodes"),
+                                DisCasAgent::nodesSummary,
+                                reload);
                 nodesSource.addListener(clientHolder::onNodesReloaded);
                 toClose.add(nodesSource);
             }
@@ -226,6 +225,7 @@ public final class DisCasAgent implements AutoCloseable {
                 .route(LockHandler.PREFIX, connection -> new LockHandler(clientHolder, cfg.requestTimeout))
                 .route("/v1/agent/health",
                         connection -> new HealthHandler(cfg.clientId.value(), clientHolder))
+                .route(ReloadHandler.PREFIX, connection -> new ReloadHandler(clientHolder))
                 .build(); // default fallback: bodyless 404
 
         final AcceptHandler acceptHandler = new AcceptHandler() {
@@ -278,7 +278,7 @@ public final class DisCasAgent implements AutoCloseable {
             Closeables.closeAll(toClose, closeFailureHandler(attention));
             throw e;
         }
-        return new DisCasAgent(server, observability, nodesSource, toClose, attention);
+        return new DisCasAgent(server, observability, toClose, attention);
     }
 
     /** The bound HTTP port (useful with an ephemeral {@code http-bind} port of 0). */
@@ -294,16 +294,19 @@ public final class DisCasAgent implements AutoCloseable {
         return observability == null ? -1 : observability.port();
     }
 
-    /** Test hook: force an immediate nodes-file re-read (no-op in inline {@code --nodes} mode). */
-    void reloadNodesNow() {
-        if (nodesSource != null) {
-            nodesSource.reloadNow();
-        }
+    /**
+     * Re-read every file this agent is serving -- its nodes file, its TLS key and trust stores --
+     * and apply the result, all of it or none of it. What {@code POST /v1/agent/reload} does; an
+     * agent started with an inline {@code --nodes} list and no TLS has nothing to read and reports
+     * an empty set.
+     */
+    public ReloadReport reloadFiles() {
+        return ReloadableFiles.shared().reloadAll();
     }
 
     /**
      * Stop the agent (best-effort). The server is closed first to stop accepting requests, then
-     * {@code toClose} is drained in reverse acquisition order (watcher, then client, then TLS).
+     * {@code toClose} is drained in reverse acquisition order (nodes file, then client, then TLS).
      */
     @Override
     public synchronized void close() {
@@ -327,13 +330,35 @@ public final class DisCasAgent implements AutoCloseable {
      *
      * <ul>
      *   <li><b>mTLS</b> (keystore present): reloadable context from a {@link FileTlsMaterialSource};
-     *   with {@code tls-cert-rotation} a {@link CertRotationManager} hot-reloads the client cert on a
+     *   with {@code tls-cert-rotation} a {@link CertRotationManager} swaps in a rotated client cert on a
      *   dedicated single-thread executor (the client factory owns its event loop and does not expose
      *   it, so the agent supplies its own serializing executor for the atomic swaps).</li>
      *   <li><b>Server-authenticated TLS + token</b> (no keystore): a trust-only context loaded once;
      *   the client presents no cert and authenticates with the token.</li>
      * </ul>
      */
+    /**
+     * The nodes file's reload report: which nodes the agent will now dial. Sorted, because the
+     * parse comes out of {@code Properties} in no order at all and a report that reshuffles itself
+     * cannot be compared with the last one. Addresses are topology, and are the point of reading
+     * it -- an agent that quietly kept the old list looks exactly like one that took the new.
+     */
+    static String nodesSummary(final Map<NodeId, InetSocketAddress> nodes) {
+        final List<NodeId> ids = new ArrayList<>(nodes.keySet());
+        Collections.sort(ids);
+        final StringBuilder sb = new StringBuilder();
+        sb.append(ids.size()).append(ids.size() == 1 ? " node: " : " nodes: ");
+        for (int i = 0; i < ids.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            final InetSocketAddress address = nodes.get(ids.get(i));
+            sb.append(ids.get(i).value()).append('=')
+                    .append(address.getHostString()).append(':').append(address.getPort());
+        }
+        return sb.toString();
+    }
+
     private static ClientSecurityProvider clientSecurity(final DisCasAgentConfig cfg,
                                                          final List<AutoCloseable> toClose,
                                                          final ReloadObserver reload)

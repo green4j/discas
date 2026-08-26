@@ -83,11 +83,15 @@ hello time, never the `senderId` carried in each message, which is self-declared
 
 ### Rotation
 
-Everything file-backed hot-reloads through one mechanism (`WatchedFileSource` over the single
-process-wide `FileWatchDaemon`): the member list, client tokens, the client ACL, and TLS material.
-A reload that fails to parse keeps the last good value and reports it; TLS material swaps trust
-first, then key, so new handshakes accept both the old and the new CA during a rotation and
-established connections are undisturbed.
+Everything file-backed reloads through one mechanism (`ReloadableFileSource` registered in the
+process-wide `ReloadableFiles`): the member list, client tokens, the client ACL, and TLS material.
+Nothing polls -- `ReloadableFiles.reloadAll()`, reached from `DisCasNode.reloadFiles()` and the
+`POST /reload` endpoint, is the only thing that reads a file after startup, which is what makes an
+in-place edit safe. It is a two-phase commit across every registered source: all of them parse
+before any of them publishes, so a single unparseable file leaves the whole set as it was. A reload
+that fails to parse keeps the last good value and reports it; TLS material swaps trust first, then
+key, so new handshakes accept both the old and the new CA during a rotation and established
+connections are undisturbed.
 
 ## Source map
 
@@ -106,7 +110,7 @@ established connections are undisturbed.
 | Client auth | `discas-common/src/main/java/io/github/green4j/discas/common/client/auth/ClientAuthenticator.java` |
 | Authorization | `discas-node/src/main/java/io/github/green4j/discas/node/acl/ClientAuthorizer.java`, `ClientPolicy.java`, `ClientOp.java` |
 | Membership | `discas-node/src/main/java/io/github/green4j/discas/node/membership/Members.java`, `FileMembers.java` |
-| Hot reload | `discas-common/src/main/java/io/github/green4j/discas/common/io/WatchedFileSource.java`, `FileWatchDaemon.java` |
+| Reload | `discas-common/src/main/java/io/github/green4j/discas/common/io/ReloadableFileSource.java`, `ReloadableFiles.java`, `ReloadReport.java` |
 
 ## Tests
 

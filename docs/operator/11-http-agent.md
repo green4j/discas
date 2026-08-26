@@ -65,8 +65,19 @@ Same rules as everywhere: a `DISCAS_*` variable per option, `CLI > ENV > DEFAULT
 effective-configuration table at startup ([7. Configuration](07-configuration.md)). `discas-agent
 --help` is the authoritative list.
 
-**`--nodes-file` is worth preferring** over `--nodes`: it is hot-reloaded, so an agent follows a
-membership change without a restart, and it is the same file the nodes already read.
+**`--nodes-file` is worth preferring** over `--nodes`: it can be re-read on request, so an agent
+follows a membership change without a restart, and it is the same file the nodes already read.
+
+```sh
+curl -s -X POST localhost:8500/v1/agent/reload
+```
+
+That call re-reads the nodes file and the agent's TLS material together, applying both or neither,
+and answers `200` when the set went in and `400` when it did not. Nothing reads those files at any
+other time, so an edit in progress is never picked up half-written. A malformed file leaves the
+previous list in force, and a file that means what is already running is reported `unchanged`.
+Applying a new list retires the old client, **failing whatever was in flight on it**, so expect a
+burst of request failures at the moment of a reload.
 
 ### What the ids in `--nodes` are, and are not
 
@@ -144,7 +155,7 @@ An agent that will not connect at all is usually pointed at the peer port.
 | `ACCESS_DENIED` | a node refused the agent's `CLIENT_HELLO` | -- | check `--client-id` and `--token` against that node's `--client-auth` and ACL file |
 | `FOREIGN_CLUSTER` | nodes reported a different cluster id, or two reported different cluster sizes | -- | the agent is pointed at the wrong deployment, or at two |
 | `CLUSTER_SIZE_INVALID` | a node answered with a cluster size that cannot be true | -- | fix `--cluster-size` where that node runs |
-| `RELOAD_FAILED` | `--nodes-file` changed and did not parse | -- | fix the file; the previous list is still in force |
+| `RELOAD_FAILED` | a reload read `--nodes-file` and it did not parse | -- | fix the file and reload again; the previous list is still in force |
 
 The agent shares the node's operator-attention taxonomy rather than having one of its own, so
 `discas_operator_attention > 0` covers both processes with one rule
@@ -155,7 +166,7 @@ The agent shares the node's operator-attention taxonomy rather than having one o
 | Every request fails, health says `ok` | the cluster lost quorum. The agent is fine; ask the nodes |
 | The agent starts and reaches nobody | pointed at peer ports instead of client ports, or a firewall between them |
 | Requests are slow but succeed | a coordinator is unhealthy and the agent is failing over on each request. Find it via the node metrics |
-| A membership edit had no effect | `--nodes` is static. Use `--nodes-file` |
+| A membership edit had no effect | `--nodes` is static -- use `--nodes-file`. With the file, nothing re-reads it until you `POST /v1/agent/reload` |
 
 ---
 

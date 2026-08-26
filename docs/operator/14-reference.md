@@ -15,8 +15,8 @@ are the ones the software supplies.
 |---|---|---|---|---|
 | Peer | `--peer-bind` | this node's entry in the member list | consensus, anti-entropy, handshakes | members only |
 | Client | `--client-bind` | **required** | client and agent requests | your applications |
-| Node observability | `--observability-bind` | `127.0.0.1:9600` | `/metrics`, `/health`, `/ready` | loopback |
-| Agent HTTP | `--http-bind` | -- | `/v1/kv`, `/v1/lock`, `/v1/agent/health` | local callers |
+| Node observability | `--observability-bind` | `127.0.0.1:9600` | `/metrics`, `/health`, `/ready`, `/reload` | loopback |
+| Agent HTTP | `--http-bind` | -- | `/v1/kv`, `/v1/lock`, `/v1/agent/health`, `/v1/agent/reload` | local callers |
 | Agent observability | `--observability-bind` | `127.0.0.1:9601` | `/metrics` | loopback |
 
 ---
@@ -57,7 +57,9 @@ Arguments, `DISCAS_*` variables and behaviour are identical either way.
 | `GET /health` | node | **liveness** -- 200 past replay with an intact WAL. Point a restart policy here |
 | `GET /ready` | node | **readiness** -- 200 while additionally serving and quorum-connected. Point a load balancer here |
 | `GET /metrics` | node, agent | Prometheus/OpenMetrics text exposition |
+| `POST /reload` | node | re-read the member, token, ACL and TLS files. 200 applied, 400 refused -- [7. Configuration](07-configuration.md#reload-vs-restart) |
 | `GET /v1/agent/health` | agent | agent liveness only -- 200 while the process is up, even with no quorum |
+| `POST /v1/agent/reload` | agent | re-read the nodes file and TLS material. Same report and same status codes |
 | `/v1/kv`, `/v1/lock` | agent | the data plane -- see the [agent manual](../agent/README.md) |
 
 ---
@@ -205,7 +207,6 @@ clause.
 | `CLOCK_UNUSABLE` | `CONFIG` | -- | Fix NTP on that node: its clock is more than five minutes from ours, which the handshake's replay guard refuses |
 | `ACCESS_DENIED` | `CONFIG` | -- | This process's credentials are not accepted by that node |
 | `RELOAD_FAILED` | `CONFIG` | -- | Fix the file |
-| `RELOAD_NOT_WATCHED` | `CONFIG` | -- | Check the host's filesystem watch limits (inotify on Linux) |
 | `MATERIAL_EXPIRING` | `CONFIG` | -- | Rotate this material before it expires |
 | `STORE_FULL` | `CAPACITY` | -- | Give this node more heap, or raise `--store-heap-fraction`, and restart it |
 | `UNHANDLED_ERROR` | `INTERNAL` | -- | Collect the stack trace and report it |
@@ -276,12 +277,12 @@ sample: one gauge per raised-and-due state, labelled `group`, `state` and `scope
 | `discas_node_unaccounted_keys_dropped_total` | counter | Keys dropped by a node that could not account for its own history and whose peers did not hold them. |
 | `discas_node_wal_degradations_total` | counter | Times the WAL was marked degraded. |
 | `discas_node_writes_refused_no_capacity_total` | counter | Client writes this coordinator refused before running a round, for want of room. |
-| `discas_reload_check_failures_total` | counter | Scheduled reload checks that threw. |
-| `discas_reload_failures_total` | counter | Background reloads that failed; the last good value was retained. |
-| `discas_reload_material_expires_seconds` | gauge | Unix seconds at which watched material expires; 0 when nothing has warned. |
-| `discas_reload_material_expiring_total` | counter | Times watched material was reported as expiring with no replacement. |
-| `discas_reload_watch_unavailable_total` | counter | Times a filesystem watch could not be established, degrading to the safety poll. |
-| `discas_reloads_total` | counter | Background reloads that succeeded. |
+| `discas_reload_check_failures_total` | counter | Checks around a source that threw. |
+| `discas_reload_failures_total` | counter | Reloads that were refused; the last good value was retained. |
+| `discas_reload_material_expires_seconds` | gauge | Unix seconds at which loaded material expires; 0 when nothing has warned. |
+| `discas_reload_material_expiring_total` | counter | Times loaded material was reported as expiring with no replacement. |
+| `discas_reloads_total` | counter | Reloads that were applied. |
+| `discas_reloads_unchanged_total` | counter | Reloads of a source that held what was already in force, so nothing was applied. |
 
 Node lifecycle counters, one per state, follow the pattern `discas_node_state_<state>_total`.
 

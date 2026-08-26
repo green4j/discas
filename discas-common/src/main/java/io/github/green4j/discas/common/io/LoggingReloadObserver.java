@@ -19,13 +19,15 @@ import java.time.Instant;
  * {@link OperatorAttention} so each carries what to do about it and shows as one sample while it
  * lasts. They are split by what the reader has to fix, not by how bad they sound:
  * <ul>
- *   <li>{@link #reloadFailed} is a <b>malformed file</b> -- one caught mid-write is retried
- *       silently and never reaches here -- so it stays raised until a reload of that source
- *       succeeds.</li>
- *   <li>{@link #watchUnavailable} is a <b>degraded but working</b> watch: the safety poll still
- *       picks changes up, just later. The action is the host's watch limits.</li>
- *   <li>{@link #checkFailed} is the check machinery <b>throwing</b>, a defect rather than a file
- *       problem, so it reports as one.</li>
+ *   <li>{@link #reloadFailed} is a <b>malformed file</b> -- one caught mid-write is reported to the
+ *       caller as unreadable and never reaches here -- so it stays raised until a reload of that
+ *       source succeeds.</li>
+ *   <li>{@link #reloadUnchanged} is a file that <b>meant nothing new</b>: an {@code info} line like
+ *       a reload, since it answers the same question, and it clears the failure for the same reason
+ *       a reload does.</li>
+ *   <li>{@link #checkFailed} is the machinery around a source <b>throwing</b> -- a periodic check,
+ *       or a consumer of a value that was applied -- a defect rather than a file problem, so it
+ *       reports as one.</li>
  *   <li>{@link #materialExpiring} ends in peers refusing each other, and is an outage by the time
  *       it would be an error, so it is raised ahead of the deadline.</li>
  * </ul>
@@ -54,25 +56,30 @@ public class LoggingReloadObserver extends DelegatingReloadObserver {
         super.reloaded(source, detail);
     }
 
+    /**
+     * Also clears {@code RELOAD_FAILED}: the content on disk is byte-for-byte or value-for-value
+     * what is already in force, so whatever was malformed has been taken back off the disk. Logged
+     * rather than swallowed, because "nothing changed" is the answer to a question somebody just
+     * asked by triggering a reload.
+     */
     @Override
-    public void reloadFailed(final String source, final Throwable error) {
-        attention.raise(OperatorState.RELOAD_FAILED, source,
-                "the file changed and did not parse; keeping the last good value", error);
-        super.reloadFailed(source, error);
+    public void reloadUnchanged(final String source, final String detail) {
+        log.info("Unchanged " + source + ": " + detail);
+        attention.clear(OperatorState.RELOAD_FAILED, source);
+        super.reloadUnchanged(source, detail);
     }
 
     @Override
-    public void watchUnavailable(final String source, final Throwable error) {
-        attention.raise(OperatorState.RELOAD_NOT_WATCHED, source,
-                "the filesystem watch is unavailable; the safety poll is carrying this source",
-                error);
-        super.watchUnavailable(source, error);
+    public void reloadFailed(final String source, final Throwable error) {
+        attention.raise(OperatorState.RELOAD_FAILED, source,
+                "the file did not parse; keeping the last good value", error);
+        super.reloadFailed(source, error);
     }
 
     @Override
     public void checkFailed(final String source, final Throwable error) {
         attention.raise(OperatorState.UNHANDLED_ERROR, source,
-                "the scheduled check threw; the next tick retries", error);
+                "a check around this source threw; the value in force is unaffected", error);
         super.checkFailed(source, error);
     }
 

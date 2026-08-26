@@ -61,13 +61,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>
  * {@code DisCasClient} captures its peer set at construction, so the agent applies a nodes-file
  * change by building an entirely new client and swapping it in, retiring the old one on a separate
- * thread (its {@code shutdown()} blocks on event-loop termination and must not stall the file-watch
- * thread). Anything already in flight on the outgoing client is therefore caught mid-request.
+ * thread (its {@code shutdown()} blocks on event-loop termination and must not stall the thread that
+ * asked for the reload). Anything already in flight on the outgoing client is therefore caught
+ * mid-request.
  * <p>
  * That moment had no coverage: {@code AgentNodesFileReloadTest} drives the reload end-to-end over
  * HTTP but only asserts that requests work again <em>afterwards</em>. What matters operationally is
  * that an in-flight request resolves rather than hanging, that the swap is visible immediately, and
- * that a redundant reload does not churn the client -- {@code WatchedFileSource} replays the
+ * that a redundant reload does not churn the client -- {@code ReloadableFileSource} replays the
  * current value to every new subscriber, so a rebuild on equal input would drop live connections
  * on every startup.
  */
@@ -175,7 +176,7 @@ class ReloadableClientSwapTest {
         holder = newHolder(nodes);
         final DisCasClient before = holder.current();
 
-        // WatchedFileSource replays the current value to every new subscriber, so this exact call
+        // ReloadableFileSource replays the current value to every new subscriber, so this exact call
         // happens on normal startup. Rebuilding here would tear down live connections for nothing.
         holder.onNodesReloaded(nodesVia(proxy.listenAddress()));
 
@@ -262,7 +263,7 @@ class ReloadableClientSwapTest {
         holder.onNodesReloaded(nodesVia(clientAddr));
 
         assertSame(afterClose, holder.current(),
-                "A late file-watch callback must not resurrect a closed holder with a live client");
+                "A late reload callback must not resurrect a closed holder with a live client");
         holder = null;
     }
 }

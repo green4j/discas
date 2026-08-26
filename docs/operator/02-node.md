@@ -76,7 +76,7 @@ A node has exactly two paths that matter, and neither has a default:
 | | Set by | Contents |
 |---|---|---|
 | Data directory | `--wal-dir` | `incarnation` (the marker), `wal/` (segments), `snap/` (snapshots) |
-| Configuration | `--members-file`, `--client-token-file`, `--client-acl-file`, the `--*-truststore`/`--*-keystore` paths | one file each, several hot-reloaded |
+| Configuration | `--members-file`, `--client-token-file`, `--client-acl-file`, the `--*-truststore`/`--*-keystore` paths | one file each, several re-readable without a restart |
 
 **One directory, one member, forever.** The data directory belongs to the `node_id` that has been
 running on it, and to no other. Nothing about the layout enforces this, and nothing can.
@@ -159,8 +159,11 @@ Restarting **several** nodes is a different operation with a trap in it -- see
 
 ### Reloading without a restart
 
-Four files are watched and re-read in place, with the last good version staying in force if the new
-one does not parse:
+Four files are re-read when you ask this node to read them:
+
+```
+curl -X POST http://127.0.0.1:9600/reload
+```
 
 | File | Flag |
 |---|---|
@@ -169,8 +172,12 @@ one does not parse:
 | Client ACL | `--client-acl-file` |
 | TLS key and trust stores | `--tls-*`, `--client-tls-*`, with `--tls-cert-rotation` |
 
+All four go in together or none does, and the last good version stays in force for every one of them
+if any fails to parse. Nothing reads these files at any other time, so you can edit them in place.
+
 Everything else -- ports, `--wal-dir`, `--cluster-size`, timeouts -- takes a restart.
-[7. Configuration](07-configuration.md#reload-vs-restart) has the full split.
+[7. Configuration](07-configuration.md#reload-vs-restart) has the full split, and the shape of the
+reply.
 
 ---
 

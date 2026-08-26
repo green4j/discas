@@ -7,15 +7,14 @@
 
 package io.github.green4j.discas.node.membership;
 
-import io.github.green4j.discas.common.io.WatchedFile;
 import io.github.green4j.discas.common.identity.NodeId;
-import io.github.green4j.discas.common.io.WatchedFileSource;
+import io.github.green4j.discas.common.io.ReloadableFileSource;
+import io.github.green4j.discas.common.io.ReloadReport;
 
 import java.io.ByteArrayInputStream;
 import io.github.green4j.discas.common.io.ReloadObserver;
 
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,39 +22,32 @@ import java.util.Properties;
 import java.util.function.Consumer;
 
 /**
- * A {@link Members} list backed by a config file, watched and polled for changes
- * and hot-reloaded. Format (java properties, one line per member; no
- * {@code cluster_id} -- that is supplied to the node at startup):
+ * A {@link Members} list backed by a config file, re-read on request. Format (java
+ * properties, one line per member; no {@code cluster_id} -- that is supplied to the node
+ * at startup):
  * <pre>
  *   node.1 = node-1.discas.svc.cluster.local:9001
  *   node.2 = node-2.discas.svc.cluster.local:9001
  * </pre>
  *
- * <p>All the watching, change-gating, replay-on-subscribe and fail-fast-on-initial-load lives in
- * the shared {@link WatchedFileSource}; this class supplies only the members parser. A malformed
- * reload is reported and ignored, keeping the last good snapshot.
+ * <p>All the reading, change-gating, replay-on-subscribe and fail-fast-on-initial-load lives in
+ * the shared {@link ReloadableFileSource}; this class supplies only the members parser. A malformed
+ * reload is refused and reported, keeping the last good snapshot.
  */
 public final class FileMembers implements Members<TcpMemberInfo>, AutoCloseable {
 
 
-    private final WatchedFileSource<MembersSnapshot<TcpMemberInfo>> source;
+    private final ReloadableFileSource<MembersSnapshot<TcpMemberInfo>> source;
 
     public FileMembers(final Path file) {
-        this(file, WatchedFile.DEFAULT_POLL_INTERVAL);
+        this(file, ReloadObserver.NONE);
     }
 
     public FileMembers(final Path file, final ReloadObserver observer) {
-        this(file, WatchedFile.DEFAULT_POLL_INTERVAL, observer);
-    }
-
-    public FileMembers(final Path file, final Duration pollInterval) {
-        this(file, pollInterval, ReloadObserver.NONE);
-    }
-
-    public FileMembers(final Path file, final Duration pollInterval, final ReloadObserver observer) {
         final Path abs = file.toAbsolutePath();
-        this.source = new WatchedFileSource<>(
-                List.of(abs), pollInterval, contents -> parse(abs, contents.get(0)), observer);
+        this.source = new ReloadableFileSource<>(
+                List.of(abs), contents -> parse(abs, contents.get(0)),
+                MembersSnapshot::summary, observer);
     }
 
     @Override
@@ -68,9 +60,9 @@ public final class FileMembers implements Members<TcpMemberInfo>, AutoCloseable 
         source.addListener(listener);
     }
 
-    /** Force an immediate check-and-reload (e.g. on an ops signal or in tests). */
-    public void reloadNow() {
-        source.reloadNow();
+    /** Re-read this file alone and apply what it says. */
+    public ReloadReport.Entry reloadNow() {
+        return source.reloadNow();
     }
 
     @Override
@@ -96,8 +88,10 @@ public final class FileMembers implements Members<TcpMemberInfo>, AutoCloseable 
             if (colon <= 0 || colon == hostPort.length() - 1) {
                 throw new IllegalArgumentException("Bad address '" + hostPort + "' for " + name);
             }
-            final String host = hostPort.substring(0, colon);
-            final int port = Integer.parseInt(hostPort.substring(colon + 1));
+            // Both halves trimmed: "host : 9001" is the same member as "host:9001", and a
+            // difference the file cannot mean must not read as a change on reload.
+            final String host = hostPort.substring(0, colon).trim();
+            final int port = Integer.parseInt(hostPort.substring(colon + 1).trim());
             members.put(nodeId, new TcpMemberInfo(nodeId, host, port));
         }
         if (members.isEmpty()) {

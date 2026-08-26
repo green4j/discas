@@ -81,7 +81,8 @@ final class TokenCommand extends AbstractCommand {
             note("token supplied by you; this command did not keep it");
         }
         note("append the line above to the node's --client-token-file, or write it as "
-                + clientId.value() + ".token under --client-token-dir. Both are hot-reloaded.");
+                + clientId.value() + ".token under --client-token-dir, then POST /reload on each "
+                + "node to put it in force.");
     }
 
     /** Commentary, on standard error, so a redirect of the record cannot swallow it. */

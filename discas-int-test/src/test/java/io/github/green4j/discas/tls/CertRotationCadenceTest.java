@@ -9,6 +9,7 @@ package io.github.green4j.discas.tls;
 
 import io.github.green4j.discas.common.identity.ClusterId;
 import io.github.green4j.discas.common.identity.NodeId;
+import io.github.green4j.discas.common.io.ReloadReport;
 import io.github.green4j.discas.common.transport.tls.CertRotationManager;
 import io.github.green4j.discas.common.transport.tls.FileTlsMaterialSource;
 import io.github.green4j.discas.common.transport.tls.ReloadableTlsContext;
@@ -16,14 +17,12 @@ import io.github.green4j.discas.common.transport.tls.RenewalPolicy;
 import io.github.green4j.discas.common.transport.tls.TlsMaterial;
 
 import org.junit.jupiter.api.DisplayName;
-import io.github.green4j.discas.TestAwait;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -32,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@DisplayName("CertRotationManager -- periodic hot-reload cadence")
+@DisplayName("CertRotationManager -- what a reload of the material costs and reaches")
 class CertRotationCadenceTest {
 
     private static final ClusterId CLUSTER = ClusterId.of("cadence");
@@ -40,16 +39,15 @@ class CertRotationCadenceTest {
     private static final char[] PW = "changeit".toCharArray();
 
     @Test
-    @DisplayName("A key store rewritten by an external agent is hot-swapped by the source's safety poll (no reloadNow)")
-    void periodicPollPicksUpRewrittenFile(@TempDir final Path dir) throws Exception {
+    @DisplayName("A key store renewed on disk reaches the TLS context on the next reload, and only then")
+    void aReloadHotSwapsTheRenewedKeyStore(@TempDir final Path dir) throws Exception {
         final TestCa ca = new TestCa(Files.createDirectories(dir.resolve("pki")), CLUSTER);
         final Path keyFile = dir.resolve("key.p12");
         final Path trustFile = dir.resolve("trust.p12");
         writeMaterial(ca.material(N1), keyFile, trustFile);
 
-        // Fast safety poll so the source auto-detects a rewrite without a filesystem event.
         final FileTlsMaterialSource fileSource =
-                new FileTlsMaterialSource(keyFile, PW, trustFile, PW, Duration.ofMillis(50));
+                new FileTlsMaterialSource(keyFile, PW, trustFile, PW);
         final TlsMaterial initial = fileSource.snapshot();
         final ReloadableTlsContext ctx = ReloadableTlsContext.create(initial);
 
@@ -65,21 +63,17 @@ class CertRotationCadenceTest {
             mgr.start(); // replay-on-subscribe applies the initial material once
             assertEquals(1, applies.get(), "Initial material applied on start");
 
-            Thread.sleep(300L); // several safety polls with no change -> no further apply
-            assertEquals(1, applies.get(), "No reload while the file is unchanged");
+            assertEquals(ReloadReport.Outcome.UNCHANGED, fileSource.reloadNow().outcome());
+            assertEquals(1, applies.get(), "Nothing was rewritten, so nothing was applied");
 
-            // External agent renews the leaf on disk (mtime advanced so the signature gate opens).
+            // The external agent (cert-manager, step, a mounted secret) renews the leaf on disk.
             renewKeyStore(ca.material(N1), keyFile);
+            assertEquals(1, applies.get(),
+                    "A file on disk is not material: until a reload is asked for, nothing reads it");
 
-            // The source's periodic safety poll must apply it promptly, with no reloadNow().
-            TestAwait.until("the safety poll to apply the renewed key store", Duration.ofSeconds(10),
-                    () -> {
-                        if (applies.get() < 2) {
-                            throw new IllegalStateException("applies=" + applies.get());
-                        }
-                    });
-            assertTrue(applies.get() >= 2,
-                    "Manager hot-swapped the rewritten key store via the source's periodic poll");
+            assertEquals(ReloadReport.Outcome.APPLIED, fileSource.reloadNow().outcome());
+            assertEquals(2, applies.get(),
+                    "and the reload hot-swaps the renewed key store into the live context");
         } finally {
             fileSource.close();
         }
@@ -112,8 +106,6 @@ class CertRotationCadenceTest {
     }
 
     private static void renewKeyStore(final TlsMaterial material, final Path keyFile) throws Exception {
-        final FileTime before = Files.getLastModifiedTime(keyFile);
         writeKeyStore(material, keyFile);
-        Files.setLastModifiedTime(keyFile, FileTime.from(before.toInstant().plusSeconds(2)));
     }
 }

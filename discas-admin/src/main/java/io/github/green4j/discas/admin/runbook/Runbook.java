@@ -21,8 +21,8 @@ import java.util.Map;
  *
  * <p>Written as a list of named sections rather than one long append, because that is what it is --
  * and because the order is an argument: what this is, what is in it, what you must not do, how to
- * start it, how clients get in, what they are allowed to touch, and how to tell it worked. A
- * section added later goes in that order or it goes nowhere.
+ * start it, how clients get in, what they are allowed to touch, how to tell it worked, and how to
+ * change any of it afterwards. A section added later goes in that order or it goes nowhere.
  *
  * <p>The runbook never invents a value. Everything variable comes from the {@link ClusterPlan}, and
  * where the plan cannot know something -- a TLS password -- it says so and names the environment
@@ -49,7 +49,8 @@ public final class Runbook {
             Runbook::bringItUp,
             Runbook::clientAccess,
             Runbook::authorization,
-            Runbook::verify);
+            Runbook::verify,
+            Runbook::changingThingsLater);
 
     private Runbook() {
     }
@@ -155,8 +156,9 @@ public final class Runbook {
             case TOKEN:
                 md.p("Create `" + plan.tokenFile() + "` on every member before starting it -- a node "
                         + "with token auth and no token file refuses every client. It is java "
-                        + "properties, one line per client, hot-reloaded. The file holds a hash "
-                        + "rather than the token, so mint each line rather than writing it:");
+                        + "properties, one line per client, re-read whenever you ask a node to "
+                        + "reload. The file holds a hash rather than the token, so mint each line "
+                        + "rather than writing it:");
                 md.code("sh", "discas-admin token --client-id web-1 --ttl-days 90 >> "
                         + plan.tokenFile() + "\n");
                 md.p("The record goes to standard output and the token itself to standard error, so "
@@ -166,7 +168,9 @@ public final class Runbook {
                         + "client.reporter = pbkdf2$...$<notAfter> ; pbkdf2$...$<notAfter>\n");
                 md.p("Two records on one line is how a token is rotated without an outage: the old "
                         + "one keeps working until its `notAfter`. The directory form (one "
-                        + "`<clientId>.token` file per client) takes the same records.");
+                        + "`<clientId>.token` file per client) takes the same records. Either way "
+                        + "the edit reaches a node when you `POST /reload` on it -- see "
+                        + "\"Changing things later\" below.");
                 break;
             case MTLS:
                 md.p("Clients present a certificate and its CN is the client id -- the id in the "
@@ -190,7 +194,7 @@ public final class Runbook {
             return;
         }
         md.p("Create `" + plan.aclFile() + "` on every member. It is java properties, one line per "
-                + "client, hot-reloaded, and grants are `<keyPrefix>:<ops>`:");
+                + "client, re-read on request, and grants are `<keyPrefix>:<ops>`:");
         md.code("", "acl.web-1 = app/:GPCD ; session/:GPCDS\n"
                 + "acl.reporter = report/:GS\n");
         md.p("The ops are letters: `G` get, `P` put, `C` compare-and-set, `D` delete, `S` scan. A "
@@ -212,6 +216,33 @@ public final class Runbook {
                 : "It should carry " + pairs + " pairs -- the number seeded into each member. Fewer "
                 + "means a member was started on the wrong directory, or traffic reached the "
                 + "cluster before every member was up.");
+    }
+
+    private static void changingThingsLater(final Markdown md, final ClusterPlan plan,
+                                           final long pairs) {
+        md.h2("Changing things later");
+        md.p("The membership file"
+                + (plan.clientAuth() == ClientAuth.TOKEN ? ", the token file" : "")
+                + (plan.aclFile() == null ? "" : ", the ACL")
+                + (plan.peerTls() || plan.clientTls() ? " and the key and trust stores" : "")
+                + " are read when you ask a node to read them, and at no other time. Edit the file "
+                + "on the host -- in place, with whatever editor you like, taking as long as you "
+                + "like -- and then put it in force:");
+        md.code("sh", "curl -X POST http://127.0.0.1:9600/reload\n");
+        md.p("Two things follow from the reload being one call rather than one per file. It applies "
+                + "**all** of them or **none**: if any file does not parse, the node keeps running "
+                + "on exactly what it was running on, which is what makes it safe to replace a "
+                + "certificate and its key together. And it answers -- a JSON body naming each "
+                + "file and what became of it, `applied`, `unchanged` or `failed` with the reason "
+                + "-- so \"did my edit take effect\" is a question with an answer rather than a "
+                + "guess. A refused reload is a `400`.");
+        md.p("Do it on every member: each node reads its own copy of these files, and a change "
+                + "applied to some members and not others is the state to avoid. The endpoint is on "
+                + "the observability port, which is loopback by default -- run the `curl` on the "
+                + "host, or set `--observability-bind` to somewhere your tooling can reach and "
+                + "treat that port as administrative.");
+        md.p("What cannot be changed this way: `N` (the cluster size is frozen), a node's id, and "
+                + "its data directory. Those are the start command, not the files.");
     }
 
     private static String copyCommands(final ClusterPlan plan, final NodeId id, final String host) {

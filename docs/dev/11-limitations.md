@@ -36,7 +36,7 @@ quorums over one key. Changing `N` is a coordinated restart, or `discas-admin in
 This is *not planned* rather than deferred: adding members to a CASPaxos cluster makes every write
 slower, because a round talks to a quorum of a larger `N`. `N` is a design-time decision.
 
-**Hot reload covers member addresses, not the member set.** A reload is rejected unless it names
+**A reload covers member addresses, not the member set.** It is rejected unless the file names
 exactly `N` members including this node.
 
 **Every member is a voter.** No observers, learners or witnesses -- so read capacity does not scale

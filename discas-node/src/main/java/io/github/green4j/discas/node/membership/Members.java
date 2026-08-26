@@ -27,7 +27,7 @@ import io.github.green4j.discas.common.io.Reloadable;
  * (a {@code Consumer<MembersSnapshot>}).
  * <p>
  * Implementations: {@link InMemoryMembers} (static) and {@link FileMembers}
- * (file-backed, watched + polled, hot-reloaded).
+ * (file-backed, re-read on request).
  */
 public interface Members<M extends MemberInfo> extends Reloadable<MembersSnapshot<M>> {
 }

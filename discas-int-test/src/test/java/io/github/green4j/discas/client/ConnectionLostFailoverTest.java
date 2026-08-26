@@ -9,6 +9,7 @@ package io.github.green4j.discas.client;
 
 import io.github.green4j.discas.TestBytes;
 import io.github.green4j.discas.client.transport.ClientTransport;
+import io.github.green4j.discas.common.Ballot;
 import io.github.green4j.discas.common.EventLoop;
 import io.github.green4j.discas.common.client.ClientErrorCode;
 import io.github.green4j.discas.common.client.ClientMessage;
@@ -25,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
@@ -32,6 +34,8 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -41,6 +45,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * when its own timer expired -- five seconds, on the default per-attempt budget, of waiting for an
  * answer that provably will never come. So every assertion here is about the request finishing far
  * inside that budget rather than merely finishing.
+ * <p>
+ * <b>Finishing is not the same as moving.</b> A dropped connection says nothing about whether the
+ * coordinator got the request committed on its way out, so what the client may do next depends on
+ * the request: a fenced write moves to another coordinator, because its duplicate provably cannot
+ * apply, while an unfenced one stops and reports an unknown outcome. Both tests below assert the
+ * same promptness and opposite verdicts.
  */
 @Timeout(value = 1, unit = TimeUnit.MINUTES)
 @DisplayName("DisCasClient -- a dropped connection fails its in-flight requests at once")
@@ -129,7 +139,7 @@ class ConnectionLostFailoverTest {
     }
 
     @Test
-    @DisplayName("An in-flight request moves to another coordinator without awaiting the timeout")
+    @DisplayName("An in-flight fenced write moves to another coordinator without awaiting the timeout")
     void inFlightRequestFailsOverImmediately() throws Exception {
         // The first coordinator addressed swallows the request; every other one serves it.
         final AtomicReference<NodeId> swallowed = new AtomicReference<>();
@@ -137,19 +147,21 @@ class ConnectionLostFailoverTest {
             if (swallowed.compareAndSet(null, target)) {
                 return null; // accepted, and silent -- exactly what a coordinator about to die does
             }
-            final ClientMessage.ClientPutReq put = (ClientMessage.ClientPutReq) message;
-            return new ClientMessage.ClientPutResp(target.value(), put.correlationId(),
-                    true, null, ClientErrorCode.NONE);
+            final ClientMessage.ClientCasReq cas = (ClientMessage.ClientCasReq) message;
+            return new ClientMessage.ClientCasResp(target.value(), cas.correlationId(),
+                    true, true, null, new Ballot(5L, NodeId.of("2")), null, ClientErrorCode.NONE);
         });
         final DisCasClient c = newClient(transport);
 
-        final CompletableFuture<Version> put = c.put(TestBytes.utf8("k"), TestBytes.utf8("v"));
+        // Fenced, so moving it is safe: the duplicate carries a ballot the register has overtaken.
+        final CompletableFuture<CasResult> cas = c.cas(TestBytes.utf8("k"),
+                new Version(new Ballot(4L, NodeId.of("1"))), TestBytes.utf8("v"));
         // Let the first attempt reach the transport before severing it.
         waitUntil(() -> swallowed.get() != null);
 
         final long startedAt = System.nanoTime();
         transport.drop(swallowed.get());
-        put.get(10, TimeUnit.SECONDS);
+        cas.get(10, TimeUnit.SECONDS);
         final Duration elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
 
         assertTrue(elapsed.compareTo(Duration.ofSeconds(1)) < 0,
@@ -157,6 +169,40 @@ class ConnectionLostFailoverTest {
                         + "s per-attempt timer; took " + elapsed.toMillis() + "ms");
         assertEquals(2, transport.addressed.size(),
                 "Expected exactly one failover, saw " + transport.addressed);
+    }
+
+    @Test
+    @DisplayName("An in-flight unfenced write stops there rather than moving -- and says so at once")
+    void inFlightUnfencedWriteIsNotMoved() throws Exception {
+        // Same drop, opposite verdict. The coordinator took the put and died; it may have got it
+        // committed by the survivors on its way out. Re-sending to a second coordinator would
+        // apply the same unconditional write a second time, reverting whoever wrote in between --
+        // so the client reports an unknown outcome instead of manufacturing a definite-looking one.
+        final AtomicReference<NodeId> swallowed = new AtomicReference<>();
+        final DroppableTransport transport = new DroppableTransport(peers(3), (target, message) -> {
+            swallowed.compareAndSet(null, target);
+            return null;
+        });
+        final DisCasClient c = newClient(transport);
+
+        final CompletableFuture<Version> put = c.put(TestBytes.utf8("k"), TestBytes.utf8("v"));
+        waitUntil(() -> swallowed.get() != null);
+
+        final long startedAt = System.nanoTime();
+        transport.drop(swallowed.get());
+        final ExecutionException thrown =
+                assertThrows(ExecutionException.class, () -> put.get(10, TimeUnit.SECONDS));
+        final Duration elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+
+        assertEquals(RequestFailedException.Cause.INDETERMINATE,
+                assertInstanceOf(RequestFailedException.class, thrown.getCause()).cause());
+        // Failing fast is half the point: waiting out the deadline cannot turn an unknown outcome
+        // into a known one.
+        assertTrue(elapsed.compareTo(Duration.ofSeconds(1)) < 0,
+                "The drop must end the write at once, not at the deadline; took "
+                        + elapsed.toMillis() + "ms");
+        assertEquals(1, transport.addressed.size(),
+                "The unfenced write must not be re-sent anywhere, saw " + transport.addressed);
     }
 
     @Test

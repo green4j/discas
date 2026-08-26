@@ -108,7 +108,7 @@ public final class DisCasNodeStarter {
         final ReloadObserver reload = new MetricsReloadObserver(metrics,
                 new LoggingReloadObserver(log, attention, ReloadObserver.NONE));
 
-        // Membership: hot-reloaded file or a fixed static list
+        // Membership: a file re-read on request, or a fixed static list
         final Members<TcpMemberInfo> members;
         if (cfg.membersFromFile()) {
             final FileMembers fileMembers = new FileMembers(cfg.membersFile, reload);
@@ -120,7 +120,7 @@ public final class DisCasNodeStarter {
 
         final TcpTransportConfig tcpConfig = cfg.peerTransportConfig;
 
-        // Peer security: plaintext or mTLS (optionally with certificate hot-reload).
+        // Peer security: plaintext or mTLS (optionally swapping in rotated certificates).
         final TcpPeerBootstrap peerBootstrap;
         ReloadableTlsContext tlsContext = null;
         FileTlsMaterialSource tlsSource = null;
@@ -169,12 +169,13 @@ public final class DisCasNodeStarter {
         // Registered as a lifecycle closeable so the listening socket goes away with the node.
         final ObservabilityServer observability = ObservabilityServer.start(
                 cfg.observabilityConfig,
-                NodeEndpoints.router(cfg.nodeId, node.healthSource(), peerState, metrics));
+                NodeEndpoints.router(cfg.nodeId, node.healthSource(), peerState, metrics,
+                        node::reloadFiles));
         if (observability != null) {
             node.addLifecycleCloseable(observability);
             System.out.println(DisCasNodeConfig.PROGRAM + ": observability on "
                     + cfg.observabilityConfig.bindAddress() + ":" + observability.port()
-                    + " (/health, /ready, /metrics)");
+                    + " (/health, /ready, /metrics, /reload)");
         }
 
         // Client access: authentication (who), TLS (channel), authorization (what). All three
@@ -186,7 +187,7 @@ public final class DisCasNodeStarter {
         DisCasNodeFactory.createClientServer(node, new TcpClientServerBootstrap(
                 cfg.clientBind, cfg.clientTransportConfig, clientAuthenticator, clientSecurity));
 
-        // Authorization: a hot-reloaded prefix->ops ACL. Unbound means permissive, so warn.
+        // Authorization: a prefix->ops ACL, re-read on request. Unbound means permissive, so warn.
         if (cfg.clientAclFile != null) {
             final FileClientAcl acl = new FileClientAcl(cfg.clientAclFile, reload);
             node.registerClientAcl(acl);
@@ -251,7 +252,7 @@ public final class DisCasNodeStarter {
         if (cfg.clientAuth != ClientAuthMode.TOKEN) {
             return AllowAllClientAuthenticator.INSTANCE;
         }
-        // ClientTokenStore itself is not AutoCloseable; the watched implementations are, so hold
+        // ClientTokenStore itself is not AutoCloseable; the file-backed implementations are, so hold
         // the concrete type long enough to register it for shutdown (as with FileMembers above).
         final ClientTokenStore store;
         if (cfg.clientTokenFile != null) {

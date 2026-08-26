@@ -20,7 +20,25 @@ package io.github.green4j.discas.client.lock;
 public enum LockWriteStatus {
     /** The write committed. */
     APPLIED,
-    /** The key holds no lock: it is absent, tombstoned, or holds a release marker. */
+    /**
+     * The key holds the release marker this caller's own token wrote. Nothing was written now,
+     * which is why this is not {@link #APPLIED}.
+     * <p>
+     * For a release retried after an answer that never came, this is the confirmation that the
+     * first attempt landed, and the caller is done. For a renew it says the same fact with a
+     * different meaning: this holder let the lock go and is now asking to extend a lease it no
+     * longer has -- its own release and its own keep-alive have crossed.
+     * <p>
+     * Kept apart from {@link #NOT_HELD} for the reason every distinction here exists: the two ask
+     * for different reactions. This one says the release was yours. That one says it was not.
+     */
+    ALREADY_RELEASED,
+    /**
+     * The key holds no lock of this caller's: it is absent, tombstoned, or holds a release marker
+     * somebody else wrote. Note what the last case does <em>not</em> settle -- whether your own
+     * release landed before the key moved on. A record remembers only the latest holder, so once
+     * another has held and released it, your own tenure is no longer written down anywhere.
+     */
     NOT_HELD,
     /** A live lock record under a different token: this caller has been displaced. */
     HELD_BY_OTHER,

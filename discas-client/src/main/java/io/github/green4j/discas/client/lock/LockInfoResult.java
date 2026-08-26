@@ -22,9 +22,17 @@ public final class LockInfoResult {
         this.info = info;
     }
 
-    /** No lock is held on the key -- it is absent, tombstoned, or holds a release marker. */
+    /** No lock is held on the key and nothing says one ever was: absent or tombstoned. */
     public static LockInfoResult unlocked() {
         return new LockInfoResult(LockInfoStatus.UNLOCKED, null);
+    }
+
+    /**
+     * No lock is held, and the release marker left behind still names the holder that let it go;
+     * {@code info} is that marker, so its lease reads as zero and long expired.
+     */
+    public static LockInfoResult released(final LockInfo info) {
+        return new LockInfoResult(LockInfoStatus.UNLOCKED, info);
     }
 
     /** The key holds a live lock. */
@@ -48,9 +56,11 @@ public final class LockInfoResult {
     }
 
     /**
-     * The lock record found, or {@code null} for {@link LockInfoStatus#UNLOCKED} and
-     * {@link LockInfoStatus#NOT_LOCK_RECORD}. Present for {@link LockInfoStatus#EXPIRED}, which
-     * is what lets a would-be successor see whom it is taking over from.
+     * The lock record found, or {@code null} for {@link LockInfoStatus#NOT_LOCK_RECORD} and for an
+     * {@link LockInfoStatus#UNLOCKED} key that holds nothing at all. Present for
+     * {@link LockInfoStatus#EXPIRED}, which is what lets a would-be successor see whom it is
+     * taking over from, and for an {@code UNLOCKED} key holding a release marker, where it names
+     * the holder that released it. In both of those the key is free; only {@code LOCKED} is not.
      */
     public LockInfo info() {
         return info;

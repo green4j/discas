@@ -38,8 +38,8 @@ import java.util.function.LongSupplier;
  * restart is the acknowledgement. That is honest rather than sticky: the alternative is a surface
  * that reports a fault has gone away because nothing mentioned it again.
  * <p>
- * <b>Threading.</b> Raises arrive from an event loop, from a file-watch thread, and from a client's
- * transport; scrapes arrive from the observability server's thread. Everything here is therefore on
+ * <b>Threading.</b> Raises arrive from an event loop, from a thread that asked for a reload, and
+ * from a client's transport; scrapes arrive from the observability server's thread. All of it is on
  * a concurrent map and no lock is taken. {@link #checkDue()} is expected on one thread -- a repeating
  * timer on the owning loop -- but is safe anywhere.
  *

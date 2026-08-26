@@ -56,7 +56,7 @@ All three also run from the jars with identical arguments --
 | Group | Examples | Notes |
 |---|---|---|
 | **Identity** | `--node-id`, `--cluster-id`, `--cluster-size` | all required in practice. `--cluster-size` is `N` and is **frozen at startup** |
-| **Membership** | `--members-file`, `--members` | mutually exclusive. The file form is hot-reloaded; the list form is not |
+| **Membership** | `--members-file`, `--members` | mutually exclusive. The file form is reloadable; the list form is not |
 | **Transport** | `--peer-bind`, `--client-bind` | `--client-bind` is **required** -- discas reserves no well-known ports. `--peer-bind` defaults to this node's own entry in the member list |
 | **Storage** | `--wal-dir`, `--wal-max-file-bytes`, `--snapshot-interval-seconds`, `--snapshot-retention` | `--wal-dir` is required and is one directory per node, never shared |
 | **Runtime** | the timeouts, `--store-heap-fraction`, `--repair-interval-seconds`, `--tombstone-sweep-interval-seconds` | see [Tuning](#tuning) |
@@ -80,22 +80,79 @@ init` writes `DISCAS_TLS_KEYSTORE_PASSWORD` and its siblings into the `RUN.md` b
 
 ## Reload vs restart
 
-Four sources are watched and re-read in place. Everything else takes a restart.
+Four sources are re-read on request. Everything else takes a restart.
 
-| Hot-reloaded | Flag | On a bad file |
+| Reloadable | Flag | On a bad file |
 |---|---|---|
 | Membership | `--members-file` | refused, previous list stays (`MEMBERS_REJECTED`) |
 | Client tokens | `--client-token-file` / `--client-token-dir` | refused, previous stays (`RELOAD_FAILED`) |
 | Client ACL | `--client-acl-file` | refused, previous stays (`RELOAD_FAILED`) |
 | TLS key and trust stores | `--tls-*`, `--client-tls-*` with `--*-cert-rotation` | refused, previous material stays |
 
-The mechanism is an OS filesystem watch with a slow safety poll behind it, so an edit is normally
-seen as an event and, if the watch is unavailable, within a poll interval -- that degradation is
-itself reported, as `RELOAD_NOT_WATCHED`.
+**A file is read when you ask for it to be read, and at no other time:**
 
-**A failed reload is never an outage.** The last good version stays in force. A file caught
-mid-write is retried silently and does not raise anything; reaching `RELOAD_FAILED` means what is on
-disk is malformed and will stay malformed until you edit it.
+```
+curl -X POST http://127.0.0.1:9600/reload
+```
+
+That is the whole trigger, and both of its consequences are the reason for it.
+
+**You can edit in place.** Nothing looks at a file between the moment your editor truncates it and
+the moment it is saved, so an editor that saves on a timer, a half-finished ACL, or a `sed -i` that
+takes a second cannot be read as a revision -- because nobody is reading. There is no window to race
+and no temp-file-and-rename dance to remember.
+
+**A set of files applies as a set.** One call re-reads *all* four sources, and it parses everything
+before it publishes anything: if any of them is refused, **none** is applied and the node goes on
+enforcing exactly what it was enforcing before. So a certificate and its private key, or a members
+list and the ACL that names it, change together or not at all. Nothing half-applies.
+
+The reply is the answer to "did that take effect" -- `200` when the set went in, `400` when it did
+not, and a line per source either way:
+
+```json
+{"status":"applied","sources":[
+  {"source":"/etc/discas/members.conf","outcome":"applied","detail":"3 nodes: 1=node-1:9001, 2=node-2:9001, 3=node-3:9001"},
+  {"source":"/etc/discas/acl.conf","outcome":"unchanged","detail":"byte-identical to what is in force; not applied"}]}
+```
+
+| `outcome` | What it means |
+|---|---|
+| `applied` | read, parsed, differed from what was in force, and is now in force |
+| `unchanged` | read and parsed, and there was nothing to apply -- see below |
+| `failed` | did not parse. The last good version stays, and **nothing else in this reload was applied either** |
+| `unreadable` | caught mid-write, so nothing is known about it and nothing was decided. Reload again once the writer has finished |
+| `not-applied` | this file was fine and is being held back, because another source in the same reload was refused |
+
+`unchanged` is an answer and not silence, because it is usually the interesting one: **reordered
+lines, reordered grants, whitespace and comments are not changes.** They reach the parser, produce
+the same configuration, and are reported as `unchanged` rather than applied. Getting it when you
+expected `applied` normally means you edited a copy, or the host you edited is not the host you
+reloaded.
+
+**A refused reload is never an outage.** The last good version stays in force, on every source.
+
+**Every application also leaves a log line**, so an edit is checkable after the fact and not only in
+the reply:
+
+```
+Reloaded /etc/discas/acl.conf: applied -- 2 clients: reporter -> report/:GS; web-1 -> app/:GPCD session/:GPCDS
+Reloaded /etc/discas/members.conf: applied -- 3 nodes: 1=node-1:9001, 2=node-2:9001, 3=node-3:9001
+Unchanged /etc/discas/acl.conf: the file changed but says what is already in force; not applied
+```
+
+The report names what is now in force, sorted, so two of them can be compared -- and the first one
+is written at startup, when the whole configuration is new.
+
+**Reload every member.** Each node reads its own copy of these files; a change applied to some
+members and not others is the state to avoid, and nothing in the cluster propagates it for you.
+The agent has the same call at `POST /v1/agent/reload` for its own nodes file and TLS material.
+
+What the line never carries is the material the file exists to protect. A token store reports which
+clients are provisioned, how many records each has and when the last one expires -- never a hash,
+salt or work factor. TLS material reports the leaf's subject, serial, issuer and expiry, which every
+handshake shows the other side anyway -- never the private key or its password. A log is read by
+more people than the file is.
 
 **Requires a restart:** every port, `--wal-dir`, `--cluster-size`, every timeout and limit, the
 authentication *mode*, and turning TLS on or off. Note the distinction in the security domain: the
@@ -154,7 +211,7 @@ rather than failing later on a large value.
 |---|---|
 | A setting you gave has no effect | the effective-configuration table. It records the source of every value -- `DEFAULT` there means neither your flag nor your variable was seen |
 | The node refuses to start with a config message | it validates combinations, not just values: `token` mode without a token store, `mtls` without a trust store, `--client-tls` without a keystore. The message names the missing option |
-| An edit to a watched file did nothing | `discas_reloads_total` vs `discas_reload_failures_total`, and `RELOAD_FAILED` for the reason. Check you edited the file the flag actually points at |
+| An edit to a reloadable file did nothing | first, whether you called `POST /reload` on *that* host -- nothing reads the file until you do. Then the reply's `outcome` for that file: `unchanged` means it parsed to what was already running (usually a copy edited, or a cosmetic change), `failed` gives the reason it was refused, and `not-applied` means another file in the same reload was refused and took this one down with it |
 | A member-file edit was refused | it must define exactly `--cluster-size` members and include this node. Adding or removing a member changes `N` and is always ignored -- [3. Cluster](03-cluster.md#what-a-reload-does) |
 | Writes fail faster than your timeout | `--proposal-expiry-ms` is shorter than the retry chain, above |
 
@@ -164,7 +221,7 @@ rather than failing later on a large value.
 
 | Change | Effect |
 |---|---|
-| Any hot-reloaded file | applies within seconds, no dropped connections |
+| Any reloadable file | applies on `POST /reload`, no dropped connections |
 | Any other option | a node restart, which at `N`>=3 costs nothing visible if done one at a time |
 | `--cluster-size` | a cluster-wide operation with a write outage -- [3. Cluster](03-cluster.md#changing-n) |
 | Lowering `--wal-force-interval-ms` | less exposure on an unclean shutdown, less throughput. Never a correctness change |

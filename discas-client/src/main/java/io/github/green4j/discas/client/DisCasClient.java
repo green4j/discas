@@ -28,6 +28,8 @@ import io.github.green4j.discas.common.client.ClientMessage;
 import io.github.green4j.discas.common.client.ReadConsistency;
 import io.github.green4j.discas.common.identity.ClientId;
 import io.github.green4j.discas.common.identity.NodeId;
+import io.github.green4j.discas.common.io.ReloadableFiles;
+import io.github.green4j.discas.common.io.ReloadReport;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -40,7 +42,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -160,6 +161,10 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
     private static final String ERR_ALL_PEERS_EXHAUSTED = "All peers exhausted on send failure";
     private static final String ERR_REQUEST_TIMED_OUT_PREFIX = "Request timed out";
     private static final String ERR_SCAN_NO_QUORUM_PREFIX = "Scan did not reach quorum (";
+    private static final String ERR_INDETERMINATE_UNFENCED =
+            "Unfenced write dispatched to a coordinator that did not answer; not re-sent";
+    private static final String ERR_OWNER_ID_REQUIRED =
+            "ownerId is required: it is what identifies this holder's own record afterwards";
 
     /**
      * The ordinary case: the client creates and owns its own event loop, started on the first
@@ -342,24 +347,11 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         return delete(encodeStringUtf8(key), expectedVersion);
     }
 
-    /** UTF-8 string-key form of {@link #tryLock(ByteBuffer, Duration)}. */
-    public CompletableFuture<LockAcquireResult> tryLock(final String key,
-                                                        final Duration leaseTtl) {
-        return tryLock(encodeStringUtf8(key), leaseTtl);
-    }
-
     /** UTF-8 string-key form of {@link #tryLock(ByteBuffer, Duration, String)}. */
     public CompletableFuture<LockAcquireResult> tryLock(final String key,
                                                         final Duration leaseTtl,
                                                         final String ownerId) {
         return tryLock(encodeStringUtf8(key), leaseTtl, ownerId);
-    }
-
-    /** UTF-8 string-key form of {@link #lock(ByteBuffer, Duration, Duration)}. */
-    public CompletableFuture<LockAcquireResult> lock(final String key,
-                                                     final Duration leaseTtl,
-                                                     final Duration waitTimeout) {
-        return lock(encodeStringUtf8(key), leaseTtl, waitTimeout);
     }
 
     /** UTF-8 string-key form of {@link #lock(ByteBuffer, Duration, Duration, String)}. */
@@ -1067,19 +1059,30 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
     }
 
     /**
-     * Attempts to take the lock at {@code key} for {@code leaseTtl} and returns immediately
-     * either way -- see {@link #lock} to wait for a contended lock. The owner id is a fresh
-     * random UUID.
-     */
-    public CompletableFuture<LockAcquireResult> tryLock(
-            final ByteBuffer key,
-            final Duration leaseTtl) {
-        return tryLock(key, leaseTtl, UUID.randomUUID().toString());
-    }
-
-    /**
-     * @param ownerId recorded in the lock value for diagnostics -- it is not a credential and
-     *                does not affect who may release: only the {@link LockToken} does that.
+     * Attempts to take the lock at {@code key} for {@code leaseTtl} in the name of
+     * {@code ownerId}, and returns immediately either way -- see {@link #lock} to wait for a
+     * contended lock.
+     *
+     * <p><b>The owner id is what makes an acquire recoverable, and the caller has to supply it.</b>
+     * An acquire is a write, so its outcome can be unknown: the round may have committed and the
+     * answer been lost. Nothing else in the record can settle that afterwards -- the token is
+     * generated here and never reaches a caller whose acquire failed, and the generation is not
+     * known in advance either. The owner id is the one field the caller chooses <em>before</em>
+     * the write, so it is the only thing a later read can be compared against. That is why there
+     * is no overload that invents one: an id the caller never saw cannot answer the question it
+     * exists for.
+     *
+     * <p>When the key already holds a live lease in this same name the result is
+     * {@link LockAcquireStatus#HELD_BY_SELF} and nothing is written. Turn that into a usable lock
+     * with {@link #recoverLock(ByteBuffer, String)}; retrying the acquire would only wait out a
+     * lease the caller already owns.
+     *
+     * @param ownerId names <b>one holder</b>, and must be unique among everything that can hold
+     *                this key at the same time -- across processes, and across concurrent
+     *                acquires within one process. Two holders sharing an id each see the other's
+     *                lease as their own, which is the one way to lose mutual exclusion here. It
+     *                is still not a credential: only the {@link LockToken} decides who may
+     *                release or renew.
      */
     public CompletableFuture<LockAcquireResult> tryLock(
             final ByteBuffer key,
@@ -1087,9 +1090,10 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             final String ownerId) {
         checkKeySize(key);
         if (leaseTtl == null || leaseTtl.isZero() || leaseTtl.isNegative()) {
-            final CompletableFuture<LockAcquireResult> failed = new CompletableFuture<>();
-            failed.completeExceptionally(new IllegalArgumentException("leaseTtl must be > 0"));
-            return failed;
+            return failedAcquire(new IllegalArgumentException("leaseTtl must be > 0"));
+        }
+        if (ownerId == null || ownerId.isEmpty()) {
+            return failedAcquire(new IllegalArgumentException(ERR_OWNER_ID_REQUIRED));
         }
 
         final ByteBuffer keyCopy = key.duplicate();
@@ -1110,12 +1114,15 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                 return CompletableFuture.completedFuture(
                         LockAcquireResult.notLockRecord());
             }
-            final boolean heldByOther = currentRecord != null
-                    && !currentRecord.isReleased()
-                    && currentRecord.leaseUntilEpochMs() > now;
-            if (heldByOther) {
+            if (isLive(currentRecord, now)) {
+                final LockInfo held = LockInfo.fromRecord(currentRecord, now);
+                // Named apart rather than lumped into HELD_BY_OTHER: a lease standing in the
+                // caller's own name is almost always its own acquire coming back, and reporting
+                // that as somebody else's is what sends a caller into a wait it cannot win.
                 return CompletableFuture.completedFuture(
-                        LockAcquireResult.heldByOther(LockInfo.fromRecord(currentRecord, now)));
+                        ownerId.equals(currentRecord.ownerId())
+                                ? LockAcquireResult.heldBySelf(held)
+                                : LockAcquireResult.heldByOther(held));
             }
 
             final ByteBuffer token = randomToken();
@@ -1134,41 +1141,46 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                     return CompletableFuture.completedFuture(
                             LockAcquireResult.acquired(lock));
                 }
+                // The compare was lost, so somebody committed between the read and the write.
+                // Report who, which needs a second look: the value that won came back with the
+                // refusal as raw bytes, and this says what they mean as a lock.
                 return getLockInfo(keyCopy.duplicate()).thenApply(info -> {
                     if (info.status() == LockInfoStatus.NOT_LOCK_RECORD) {
                         return LockAcquireResult.notLockRecord();
                     }
-                    if (info.status() == LockInfoStatus.UNLOCKED || info.status() == LockInfoStatus.EXPIRED) {
-                        return LockAcquireResult.heldByOther(info.info());
+                    final LockInfo winner = info.info();
+                    if (winner != null && ownerId.equals(winner.ownerId())
+                            && info.status() == LockInfoStatus.LOCKED) {
+                        return LockAcquireResult.heldBySelf(winner);
                     }
-                    return LockAcquireResult.heldByOther(info.info());
+                    return LockAcquireResult.heldByOther(winner);
                 });
             }, asyncCallbacks);
         }, asyncCallbacks);
     }
 
     /**
-     * Takes the lock at {@code key} for {@code leaseTtl}, retrying with backoff until it is won
-     * or {@code waitTimeout} elapses; on expiry the result is
-     * {@link io.github.green4j.discas.client.lock.LockAcquireStatus#TIMED_OUT} rather than a
-     * failed future. Waiting is client-side polling -- the cluster keeps no wait queue, so
-     * there is no fairness between contenders. The owner id is a fresh random UUID.
+     * Takes the lock at {@code key} for {@code leaseTtl} in the name of {@code ownerId}, retrying
+     * with backoff until it is won or {@code waitTimeout} elapses; on expiry the result is
+     * {@link LockAcquireStatus#TIMED_OUT} rather than a failed future. Waiting is client-side
+     * polling -- the cluster keeps no wait queue, so there is no fairness between contenders.
+     *
+     * <p>Waiting stops early on {@link LockAcquireStatus#HELD_BY_SELF}: the lease in the way is
+     * the caller's own, so no amount of waiting can win it, and spending the budget would turn a
+     * recoverable acquire into a timeout that says nothing.
      *
      * <p>{@code waitTimeout} is measured on a monotonic clock, so the budget is unaffected by a
      * wall-clock/NTP adjustment while the acquire is retrying. The lease itself is not: it is an
      * epoch timestamp every client compares against its own wall clock (see
      * {@link #getLockInfo(ByteBuffer)}).
-     */
-    public CompletableFuture<LockAcquireResult> lock(
-            final ByteBuffer key,
-            final Duration leaseTtl,
-            final Duration waitTimeout) {
-        return lock(key, leaseTtl, waitTimeout, UUID.randomUUID().toString());
-    }
-
-    /**
-     * @param ownerId recorded in the lock value for diagnostics; see
-     *                {@link #tryLock(ByteBuffer, Duration, String)}.
+     *
+     * <p>A zero {@code waitTimeout} is {@link #tryLock(ByteBuffer, Duration, String)}, and is
+     * routed straight to it -- accepted rather than rejected because a caller spending down a
+     * budget arrives at zero honestly, and answered with the precise refusal a single attempt
+     * gives rather than the {@code TIMED_OUT} a wait would report.
+     *
+     * @param ownerId names one holder and must be unique among concurrent holders of this key;
+     *                see {@link #tryLock(ByteBuffer, Duration, String)} for why it is required.
      */
     public CompletableFuture<LockAcquireResult> lock(
             final ByteBuffer key,
@@ -1177,11 +1189,95 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             final String ownerId) {
         checkKeySize(key);
         if (waitTimeout == null || waitTimeout.isNegative()) {
-            final CompletableFuture<LockAcquireResult> failed = new CompletableFuture<>();
-            failed.completeExceptionally(new IllegalArgumentException("waitTimeout must be >= 0"));
-            return failed;
+            return failedAcquire(new IllegalArgumentException("waitTimeout must be >= 0"));
+        }
+        if (ownerId == null || ownerId.isEmpty()) {
+            return failedAcquire(new IllegalArgumentException(ERR_OWNER_ID_REQUIRED));
+        }
+        if (waitTimeout.isZero()) {
+            // A wait of nothing is a single attempt, which already has a name and a sharper answer:
+            // HELD_BY_OTHER or HELD_BY_SELF rather than a TIMED_OUT that took an extra read to say
+            // less. Delegating keeps the two forms from drifting into two behaviours.
+            return tryLock(key, leaseTtl, ownerId);
         }
         return lockAttempt(key.duplicate(), leaseTtl, deadlineNanosFromNow(waitTimeout), ownerId);
+    }
+
+    /**
+     * Turns a lock already standing in {@code ownerId}'s name back into a usable {@link Lock} --
+     * the recovery for an acquire whose outcome was never reported.
+     *
+     * <p>The acquire may well have committed with its answer lost on the way back, and a lock
+     * nobody knows they hold is held until its lease runs out. This reads the key and, if the
+     * live record is the caller's, rebuilds the lock from it: same token, same generation, so the
+     * returned lock releases and renews exactly like the one the acquire would have handed over.
+     * {@link LockAcquireStatus#NOT_HELD} means the acquire did not land and may simply be issued
+     * again.
+     *
+     * <p><b>This is where the owner id is trusted.</b> {@link #tryLock} deliberately hands back no
+     * lock on {@link LockAcquireStatus#HELD_BY_SELF}, because a shared id there would silently
+     * give two callers the same lease. Calling this is the caller stating that the id is its own,
+     * so the uniqueness contract on the acquire methods is what makes it sound.
+     *
+     * <p>The remaining lease is measured from now rather than from the original acquire, which
+     * understates it by however long the record has already been standing -- the safe direction,
+     * the same one a fresh acquire rounds towards.
+     */
+    public CompletableFuture<LockAcquireResult> recoverLock(final ByteBuffer key,
+                                                            final String ownerId) {
+        checkKeySize(key);
+        if (ownerId == null || ownerId.isEmpty()) {
+            return failedAcquire(new IllegalArgumentException(ERR_OWNER_ID_REQUIRED));
+        }
+        final ByteBuffer keyCopy = key.duplicate();
+        final long requestedAtNanos = clusterClock.monotonicNanos();
+        return get(keyCopy, ReadConsistency.LINEARIZABLE).thenApplyAsync(current -> {
+            final ByteBuffer currentValue = current.value();
+            if (currentValue == null) {
+                return LockAcquireResult.notHeld();
+            }
+            final LockValueCodec.LockRecord record = LockValueCodec.decode(currentValue);
+            if (record == null) {
+                return LockAcquireResult.notLockRecord();
+            }
+            final long now = clusterClock.nowMillis();
+            if (!isLive(record, now)) {
+                // Released, or lapsed and so anyone's to take: there is no lease left to hand
+                // back even when the name on it is ours.
+                return LockAcquireResult.notHeld();
+            }
+            final LockInfo info = LockInfo.fromRecord(record, now);
+            if (!ownerId.equals(record.ownerId())) {
+                return LockAcquireResult.heldByOther(info);
+            }
+            final DistributedLock lock = new DistributedLock(
+                    keyCopy.duplicate(), new LockToken(record.token()), info, this, clusterClock,
+                    requestedAtNanos + TimeUnit.MILLISECONDS.toNanos(
+                            record.leaseUntilEpochMs() - now));
+            return LockAcquireResult.acquired(lock);
+        }, asyncCallbacks);
+    }
+
+    /** UTF-8 string-key form of {@link #recoverLock(ByteBuffer, String)}. */
+    public CompletableFuture<LockAcquireResult> recoverLock(final String key,
+                                                            final String ownerId) {
+        return recoverLock(encodeStringUtf8(key), ownerId);
+    }
+
+    /**
+     * Whether {@code record} is a lease somebody is holding right now: present, not a release
+     * marker, and not yet lapsed. The one test that decides whether a key is free to take.
+     */
+    private static boolean isLive(final LockValueCodec.LockRecord record, final long now) {
+        return record != null
+                && !record.isReleased()
+                && record.leaseUntilEpochMs() > now;
+    }
+
+    private static CompletableFuture<LockAcquireResult> failedAcquire(final RuntimeException why) {
+        final CompletableFuture<LockAcquireResult> failed = new CompletableFuture<>();
+        failed.completeExceptionally(why);
+        return failed;
     }
 
     /**
@@ -1192,6 +1288,12 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      * An expired lease still releases: nobody has taken over while the token matches, and writing
      * the marker is the right cleanup either way. Only being displaced, or the key holding
      * something that is not this lock, stops it -- and the {@link LockWriteResult} says which.
+     * <p>
+     * Safe to retry after an answer that never arrived. The marker carries the releasing token, so
+     * a second attempt that finds its own marker comes back
+     * {@link LockWriteStatus#ALREADY_RELEASED} rather than {@link LockWriteStatus#NOT_HELD}: the
+     * retry learns that the first attempt landed, instead of getting the answer a key that was
+     * never locked would have given.
      */
     @Override
     public CompletableFuture<LockWriteResult> release(
@@ -1215,7 +1317,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             // as UNLOCKED for getLockInfo and is recognised by tryLock as a
             // freshly-acquirable slot.
             final LockValueCodec.LockRecord releasedMarker =
-                    LockValueCodec.LockRecord.releasedMarker(currentRecord.generation());
+                    LockValueCodec.LockRecord.releasedMarker(currentRecord);
             final ByteBuffer desired = LockValueCodec.encode(releasedMarker);
             return cas(keyCopy.duplicate(), current.version(), desired)
                     .thenApply(this::lockWriteOutcome);
@@ -1241,10 +1343,16 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         if (record == null) {
             return LockWriteResult.notLockRecord();
         }
-        if (record.isReleased()) {
-            return LockWriteResult.notHeld();
-        }
         final long now = clusterClock.nowMillis();
+        if (record.isReleased()) {
+            // The marker remembers its writer, so a retry of a release whose answer was lost is
+            // told that it landed instead of being lumped in with "no lock here". A marker under
+            // any other token cannot say that much: it proves the key has moved on, not whether
+            // this caller's own release got in first.
+            return record.token().equals(token.bytes())
+                    ? LockWriteResult.alreadyReleased(LockInfo.fromRecord(record, now))
+                    : LockWriteResult.notHeld();
+        }
         if (!record.token().equals(token.bytes())) {
             return LockWriteResult.heldByOther(LockInfo.fromRecord(record, now));
         }
@@ -1333,10 +1441,13 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             if (record == null) {
                 return LockInfoResult.notLockRecord();
             }
-            if (record.isReleased()) {
-                return LockInfoResult.unlocked();
-            }
             final long now = clusterClock.nowMillis();
+            if (record.isReleased()) {
+                // Free, and with the last tenancy still readable off the marker. The same reason
+                // EXPIRED keeps its record rather than collapsing into UNLOCKED: a key that says
+                // who let it go is auditable, and one that says nothing is not.
+                return LockInfoResult.released(LockInfo.fromRecord(record, now));
+            }
             final LockInfo info = LockInfo.fromRecord(record, now);
             if (record.leaseUntilEpochMs() <= now) {
                 return LockInfoResult.expired(info);
@@ -1351,8 +1462,12 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             final long deadlineNanos,
             final String ownerId) {
         return tryLock(key.duplicate(), leaseTtl, ownerId).thenComposeAsync(result -> {
+            // HELD_BY_SELF ends the wait for the same reason the other two do: no further attempt
+            // can change it. The lease in the way is this caller's own, and it will not lapse
+            // while the caller is the one meant to be renewing it.
             if (result.status() == LockAcquireStatus.ACQUIRED
-                    || result.status() == LockAcquireStatus.NOT_LOCK_RECORD) {
+                    || result.status() == LockAcquireStatus.NOT_LOCK_RECORD
+                    || result.status() == LockAcquireStatus.HELD_BY_SELF) {
                 return CompletableFuture.completedFuture(result);
             }
             if (elapsed(deadlineNanos)) {
@@ -1491,6 +1606,23 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         final byte[] token = new byte[LOCK_TOKEN_BYTES];
         LOCK_TOKEN_RNG.nextBytes(token);
         return ByteBuffer.wrap(token);
+    }
+
+    /**
+     * Re-read every file this process is serving -- the node list it dials, its TLS key and trust
+     * stores -- and apply the result, all of it or none of it. The returned report says what each
+     * source did, and is the answer to "is what I just wrote now in force".
+     * <p>
+     * Nothing reads those files unless this is called, which is what makes them safe to edit in
+     * place: no half-written store can be read as material, because between one call and the next
+     * nobody is reading. And because a refusal anywhere stops the whole reload, a key and its
+     * certificate change together or not at all.
+     * <p>
+     * Not a cluster operation and not on the loop: it reads local files on the calling thread and
+     * returns when they have been applied, so it neither blocks the loop nor returns a future.
+     */
+    public ReloadReport reloadFiles() {
+        return ReloadableFiles.shared().reloadAll();
     }
 
     @Override
@@ -1658,6 +1790,10 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             // Silence past the per-attempt timeout counts against that coordinator, so the next
             // pass skips it rather than waiting the same five seconds all over again.
             recordPeerFailure(peerIndex(current.routingKey, scheduledAttempt));
+            if (!mayMoveToAnotherCoordinator(current)) {
+                failIndeterminate(correlationId, current);
+                return;
+            }
             sendAttempt(correlationId, current, scheduledAttempt + 1);
         });
 
@@ -1763,6 +1899,12 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             if (entry == null || entry.future.isDone()) {
                 continue;
             }
+            if (!mayMoveToAnotherCoordinator(entry)) {
+                // The javadoc above is the reason this cannot simply move: a coordinator that dies
+                // just after accepting a request may still have it committed by the survivors.
+                failIndeterminate(correlationId, entry);
+                continue;
+            }
             sendAttempt(correlationId, entry, entry.currentAttempt + 1);
         }
     }
@@ -1865,6 +2007,43 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                 || code == ClientErrorCode.BALLOT_LOST
                 || code == ClientErrorCode.PROPOSAL_EXPIRED
                 || code == ClientErrorCode.INTERNAL;
+    }
+
+    /**
+     * {@link #worthAnotherCoordinator}'s rule for the case where no answer arrived at all: the
+     * coordinator went silent past the per-attempt timeout, or its connection died.
+     * <p>
+     * Silence is the harder half. An explicit refusal at least says which phase it failed in, and
+     * that is what lets the code-based rule move an unfenced write on a node-local
+     * {@code NOT_READY}. Here there is nothing to read, so nothing can rule out that the silent
+     * coordinator is still driving a round -- and a duplicate unfenced write that lands after
+     * somebody else committed reverts them. Only the two unfenced writes are held back:
+     * a version-fenced duplicate carries a ballot the register has already overtaken and provably
+     * cannot apply, and a duplicate <em>read</em> changes nothing at all, so making a read wait out
+     * a dead coordinator would cost availability and buy no safety.
+     * <p>
+     * A request that never reached the wire -- the send itself threw -- is safe whatever it is,
+     * because a coordinator that was never given the request cannot be driving a round for it.
+     */
+    private static boolean mayMoveToAnotherCoordinator(final PendingEntry entry) {
+        final boolean unfencedWrite = entry.request instanceof ClientMessage.ClientPutReq
+                || entry.request instanceof ClientMessage.ClientDeleteReq;
+        return !unfencedWrite || !entry.everDispatched;
+    }
+
+    /**
+     * End an unfenced write that reached a coordinator and got no answer. Failing here rather than
+     * at the caller's deadline is the point: further waiting cannot turn an unknown outcome into a
+     * known one, and re-sending is what we have just refused to do.
+     */
+    private void failIndeterminate(final long correlationId, final PendingEntry entry) {
+        pending.remove(correlationId);
+        if (entry.timerHandle != null) {
+            entry.timerHandle.cancel();
+            entry.timerHandle = null;
+        }
+        entry.future.completeExceptionally(new RequestFailedException(
+                RequestFailedException.Cause.INDETERMINATE, ERR_INDETERMINATE_UNFENCED));
     }
 
     private boolean retryOnNextPeer(final long correlationId, final PendingEntry entry,

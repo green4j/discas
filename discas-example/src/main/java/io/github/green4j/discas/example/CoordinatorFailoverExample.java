@@ -9,14 +9,14 @@ package io.github.green4j.discas.example;
 
 import io.github.green4j.discas.client.CasResult;
 import io.github.green4j.discas.client.DisCasClient;
+import io.github.green4j.discas.client.RequestFailedException;
 import io.github.green4j.discas.client.ScanPage;
 import io.github.green4j.discas.client.ScanResult;
 import io.github.green4j.discas.client.Version;
 import io.github.green4j.discas.client.GetResult;
 import io.github.green4j.discas.client.lock.LockAcquireResult;
-import io.github.green4j.discas.client.lock.LockInfoResult;
+import io.github.green4j.discas.client.lock.LockAcquireStatus;
 import io.github.green4j.discas.client.lock.LockInfoStatus;
-import io.github.green4j.discas.client.lock.LockToken;
 import io.github.green4j.discas.client.lock.LockWriteResult;
 import io.github.green4j.discas.client.lock.LockWriteStatus;
 import io.github.green4j.discas.common.client.ReadConsistency;
@@ -27,6 +27,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -192,39 +193,56 @@ public final class CoordinatorFailoverExample {
     }
 
     /**
-     * Scenario 3. An unfenced write has no fence, so if its outcome is ever unknown the client
-     * cannot settle it by re-reading: "not applied" and "applied and since overwritten" read
-     * identically. What resolves it is putting the writer's identity <em>in the value</em>.
+     * Scenario 3. An unfenced write has no fence, so the client will not move it to another
+     * coordinator once it has reached the wire: a duplicate {@code put} that lands after somebody
+     * else committed reverts them. The caller is told so, with
+     * {@link RequestFailedException.Cause#INDETERMINATE}, and is then holding the one outcome that
+     * cannot be settled by asking the register -- "not applied" and "applied and since
+     * overwritten" read identically.
      * <p>
-     * This scenario does not pretend to force an unknown outcome -- that needs a coordinator that
-     * stalls rather than one that dies, which is a test harness rather than an example. What it
-     * does show is the recovery that works whether or not the outcome was known, which is the part
-     * a caller has to write.
+     * What settles it is putting the writer's identity <em>in the value</em>. The read-back then
+     * answers "did mine land?" rather than "is something there?", and that answer is what makes
+     * the re-issue below safe: it happens only after the marker has proved the first attempt did
+     * not apply.
+     * <p>
+     * Killing a coordinator is enough to reach this branch, so the loop below really runs rather
+     * than merely being described.
      */
     private static void unfencedWriteAndTheAuthorMarker(final DisCasClient client) throws Exception {
         System.out.println();
         System.out.println("[3] an unfenced write, and attributing it afterwards");
         final ByteBuffer key = ExampleBytes.encode("failover/unfenced");
         final String writerId = "writer-a";
+        final String payload = writerId + ":payload";
 
-        try {
-            client.put(key.duplicate(), ExampleBytes.encode(writerId + ":payload"))
-                    .get(CALL.toMillis(), TimeUnit.MILLISECONDS);
-            System.out.println("    put returned normally -- the outcome is known");
-        } catch (final Exception failed) {
-            // The honest branch: this is where an unfenced caller is left guessing.
-            System.out.println("    put failed (" + rootCause(failed) + ")"
-                    + " -- the outcome is not necessarily 'did not happen'");
+        boolean mine = false;
+        // Bounded: each pass either proves our value is in the register or proves it is not, so
+        // this is a loop over definite answers rather than a blind retry.
+        for (int attempt = 1; attempt <= 3 && !mine; attempt++) {
+            try {
+                client.put(key.duplicate(), ExampleBytes.encode(payload))
+                        .get(CALL.toMillis(), TimeUnit.MILLISECONDS);
+                System.out.println("    attempt " + attempt + ": put returned normally");
+            } catch (final ExecutionException failed) {
+                // The honest branch, and the one that actually runs here: the coordinator took the
+                // write and died, so the client refuses to re-send it and says the outcome is open.
+                require(failed.getCause() instanceof RequestFailedException
+                                && ((RequestFailedException) failed.getCause()).cause()
+                                    == RequestFailedException.Cause.INDETERMINATE,
+                        "an unfenced write to a dying coordinator must report INDETERMINATE,"
+                                + " not a definite-looking failure; got " + rootCause(failed));
+                System.out.println("    attempt " + attempt + ": " + rootCause(failed));
+            }
+
+            // The question a version cannot answer: is the value that is there now the one I wrote?
+            final String observed = get(client, "failover/unfenced");
+            mine = observed.startsWith(writerId + ":");
+            System.out.println("      read back " + observed + " -> written by me: " + mine);
         }
 
-        // Either way, the marker answers the question the index cannot: was the value that is
-        // there now written by me?
-        final String observed = get(client, "failover/unfenced");
-        final boolean mine = observed.startsWith(writerId + ":");
-        System.out.println("    read back " + observed + " -> written by me: " + mine);
-        require(mine, "the marker must attribute the write; without it this read is inconclusive");
-        System.out.println("    an index could not have told us this: 'absent' and 'applied then"
-                + " overwritten' are indistinguishable by version alone");
+        require(mine, "the marker must eventually attribute the write to us");
+        System.out.println("    resolved by the marker, not by the version: 'absent' and 'applied"
+                + " then overwritten' are indistinguishable by version alone");
     }
 
     /**
@@ -232,47 +250,42 @@ public final class CoordinatorFailoverExample {
      * saw an error may nevertheless hold the lock, and a lock nobody knows they hold is held until
      * its lease expires.
      * <p>
-     * The recovery is not a retry. It is a read: ask who holds it, and if it is you, release with
-     * the token you were given.
+     * The recovery is not a retry -- retrying would at best wait out our own lease. It is
+     * {@code recoverLock(key, ownerId)}, and it works only because the owner id was ours to choose
+     * before the write. Nothing else in the record could serve: the token is handed back in the
+     * very response that went missing, and the generation is not knowable in advance.
      */
     private static void lockRecoveryAfterAnUnknownAcquire(final DisCasClient client) throws Exception {
         System.out.println();
-        System.out.println("[4] tryLock recovery via getLockInfo/release");
+        System.out.println("[4] tryLock recovery via recoverLock");
         final ByteBuffer key = ExampleBytes.encode("failover/job-lock");
         final String ownerId = "worker-a";
 
-        LockToken token = null;
         try {
             final LockAcquireResult acquired = client
                     .tryLock(key.duplicate(), Duration.ofSeconds(30), ownerId)
                     .get(CALL.toMillis(), TimeUnit.MILLISECONDS);
-            if (acquired.acquired()) {
-                token = acquired.token();
-                System.out.println("    tryLock succeeded, holding a token ("
-                        + token.bytes().remaining() + " bytes)");
-            } else {
-                System.out.println("    tryLock refused: held by someone else");
-            }
+            System.out.println("    tryLock -> " + acquired.status());
         } catch (final Exception failed) {
             System.out.println("    tryLock failed (" + rootCause(failed) + ")"
                     + " -- we may hold it anyway; asking");
         }
 
-        // The recovery path, run unconditionally so the example demonstrates it rather than
-        // describing it. A caller whose tryLock threw takes exactly this branch.
-        final LockInfoResult info = client.getLockInfo(key.duplicate())
+        // Run unconditionally so the example demonstrates the recovery rather than describing it,
+        // and deliberately without keeping the token from the acquire above: a caller whose
+        // tryLock threw has no token, and that is the case this has to work for.
+        final LockAcquireResult recovered = client.recoverLock(key.duplicate(), ownerId)
                 .get(CALL.toMillis(), TimeUnit.MILLISECONDS);
-        System.out.println("    getLockInfo -> " + info.status()
-                + (info.info() == null ? "" : " owner=" + info.info().ownerId()));
+        System.out.println("    recoverLock -> " + recovered.status());
 
-        if (info.status() == LockInfoStatus.LOCKED && ownerId.equals(info.info().ownerId())) {
-            // The token from the record is what release is fenced on -- the owner id is a label.
-            final LockToken holder = token != null ? token : info.info().token();
-            final LockWriteResult released = client.release(key.duplicate(), holder)
+        if (recovered.status() == LockAcquireStatus.ACQUIRED) {
+            // A rebuilt lock, not a description of one: releasing through it really does release
+            // the lease the lost acquire took.
+            final LockWriteResult released = recovered.lock().release()
                     .get(CALL.toMillis(), TimeUnit.MILLISECONDS);
             require(released.status() == LockWriteStatus.APPLIED,
-                    "we are the recorded owner, so release must succeed");
-            System.out.println("    released the lock we were holding");
+                    "a recovered lock carries the holder's own token, so release must succeed");
+            System.out.println("    released the lock we were holding without knowing it");
         }
 
         require(client.getLockInfo(key.duplicate())
