@@ -46,8 +46,9 @@ public interface Lock {
     CompletableFuture<LockWriteResult> renew(Duration newLeaseTtl);
 
     /**
-     * Reads the lock key's current state from the cluster. Unlike {@link #lockInfo()} this is a
-     * fresh remote read, so it is the only way to learn about a change another client made.
+     * Reads the lock key's current state from the cluster. Unlike the acquire-time readings this
+     * object carries ({@link #ownerId()}, {@link #fencingToken()}), this is a fresh remote read, so
+     * it is the only way to learn about a change another client made.
      */
     CompletableFuture<LockInfoResult> info();
 

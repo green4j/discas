@@ -1204,7 +1204,8 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
     }
 
     /**
-     * Turns a lock already standing in {@code ownerId}'s name back into a usable {@link Lock} --
+     * Turns a lock already standing in {@code ownerId}'s name back into a usable
+     * {@link io.github.green4j.discas.client.lock.Lock Lock} --
      * the recovery for an acquire whose outcome was never reported.
      *
      * <p>The acquire may well have committed with its answer lost on the way back, and a lock
