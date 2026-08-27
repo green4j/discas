@@ -159,7 +159,7 @@ public final class WatchExample {
 
     private static void require(final boolean condition, final String what) {
         if (!condition) {
-            throw new IllegalStateException("claim does not hold: " + what);
+            throw new IllegalStateException("Claim does not hold: " + what);
         }
     }
 }

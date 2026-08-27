@@ -191,7 +191,7 @@ class SilentCoordinatorTest {
         final AtomicInteger sends = new AtomicInteger();
         final ScriptedTransport transport = new ScriptedTransport((target, message) -> {
             if (sends.getAndIncrement() == 0) {
-                throw new IllegalStateException("connection refused");
+                throw new IllegalStateException("Connection refused");
             }
             final ClientMessage.ClientPutReq put = (ClientMessage.ClientPutReq) message;
             return new ClientMessage.ClientPutResp(target.value(), put.correlationId(),

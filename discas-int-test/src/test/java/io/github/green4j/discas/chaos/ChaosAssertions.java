@@ -154,7 +154,7 @@ final class ChaosAssertions {
             case STORE_FULL:                // the cluster is full: sizing or a leak, not the nemesis
                 return false;
             default:
-                throw new IllegalArgumentException("unclassified error code: " + code);
+                throw new IllegalArgumentException("Unclassified error code: " + code);
         }
     }
 

@@ -149,7 +149,7 @@ class ReloadableFileSourceTest {
         try (ReloadableFileSource<String> source = new ReloadableFileSource<>(List.of(f),
                 contents -> new String(contents.get(0), StandardCharsets.UTF_8),
                 value -> {
-                    throw new IllegalStateException("no summary for you");
+                    throw new IllegalStateException("No summary for you");
                 }, recording(events))) {
             Files.writeString(f, "two");
             source.reloadNow();
@@ -267,7 +267,7 @@ class ReloadableFileSourceTest {
         return new ReloadableFileSource<>(registry, List.of(f), contents -> {
             final String text = new String(contents.get(0), StandardCharsets.UTF_8);
             if (text.equals("!")) {
-                throw new IllegalArgumentException("unparseable");
+                throw new IllegalArgumentException("Unparseable");
             }
             return text;
         }, null, observer);

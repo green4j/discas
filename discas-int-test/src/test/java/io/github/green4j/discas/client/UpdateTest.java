@@ -135,7 +135,7 @@ class UpdateTest {
 
         final ExecutionException thrown = assertThrows(ExecutionException.class,
                 () -> client.update(key, current -> {
-                    throw new IllegalStateException("not today");
+                    throw new IllegalStateException("Not today");
                 }).get(TIMEOUT_MS, TimeUnit.MILLISECONDS));
 
         assertInstanceOf(IllegalStateException.class, thrown.getCause());
