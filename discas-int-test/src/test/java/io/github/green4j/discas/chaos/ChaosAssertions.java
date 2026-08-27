@@ -127,20 +127,13 @@ final class ChaosAssertions {
     }
 
     /**
-     * Whether {@code t} is a condition the nemesis is expected to create, rather than a defect.
-     * <p>
-     * Entirely type-driven: matching substrings of exception messages would make a contended CAS
-     * reported as "Prepare rejected" matched none of them -- so a routine chaos outcome was
-     * intermittently graded a fatal error. Message text is for humans and may be rephrased at any
-     * time; every failure the system raises now carries its case in its type.
-     */
-    /**
      * Whether a node's verdict is something the nemesis manufactures on purpose, rather than a
      * defect the chaos run has caught.
      * <p>
-     * An exhaustive switch with no {@code default}: a finer answer to the same question, added to
-     * the enum later, would otherwise read here as a new class of defect and turn the chaos suites
-     * red. Naming every constant means the next code added has to be classified.
+     * Every constant is named, and the {@code default} throws rather than answering. A code added
+     * to the enum later and not classified here would otherwise be graded silently -- as a defect
+     * if the default said {@code false}, turning the chaos suites red for the wrong reason, or as
+     * routine if it said {@code true}, hiding a real one. Failing on the code itself says which.
      */
     private static boolean isNemesisProduced(final ClientErrorCode code) {
         switch (code) {
@@ -158,12 +151,21 @@ final class ChaosAssertions {
             case INVALID_ARGUMENT:
             case INTERNAL:
             case NONE:                      // a failure carrying NONE is itself a defect
+            case STORE_FULL:                // the cluster is full: sizing or a leak, not the nemesis
                 return false;
             default:
-                return false;
+                throw new IllegalArgumentException("unclassified error code: " + code);
         }
     }
 
+    /**
+     * Whether {@code t} is a condition the nemesis is expected to create, rather than a defect.
+     * <p>
+     * Entirely type-driven: matching substrings of exception messages would make a contended CAS
+     * reported as "Prepare rejected" matched none of them -- so a routine chaos outcome was
+     * intermittently graded a fatal error. Message text is for humans and may be rephrased at any
+     * time; every failure the system raises now carries its case in its type.
+     */
     private static boolean isTransientChaosError(final Throwable t) {
         if (t instanceof TimeoutException) {
             return true;

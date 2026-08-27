@@ -323,21 +323,6 @@ public final class DisCasAgent implements AutoCloseable {
     }
 
     /**
-     * Build the outbound client's channel security from {@code cfg}, mirroring the TLS wiring of
-     * {@code DisCasNodeStarter} but on the client side. Returns {@code null} for plaintext (the
-     * caller then uses the token-only bootstrap). Any long-lived resources (material source, cert
-     * rotation, its executor) are appended to {@code toClose} in acquisition order.
-     *
-     * <ul>
-     *   <li><b>mTLS</b> (keystore present): reloadable context from a {@link FileTlsMaterialSource};
-     *   with {@code tls-cert-rotation} a {@link CertRotationManager} swaps in a rotated client cert on a
-     *   dedicated single-thread executor (the client factory owns its event loop and does not expose
-     *   it, so the agent supplies its own serializing executor for the atomic swaps).</li>
-     *   <li><b>Server-authenticated TLS + token</b> (no keystore): a trust-only context loaded once;
-     *   the client presents no cert and authenticates with the token.</li>
-     * </ul>
-     */
-    /**
      * The nodes file's reload report: which nodes the agent will now dial. Sorted, because the
      * parse comes out of {@code Properties} in no order at all and a report that reshuffles itself
      * cannot be compared with the last one. Addresses are topology, and are the point of reading
@@ -359,6 +344,22 @@ public final class DisCasAgent implements AutoCloseable {
         return sb.toString();
     }
 
+    /**
+     * Build the outbound client's channel security from {@code cfg}, mirroring the TLS wiring of
+     * {@code DisCasNodeStarter} but on the client side. Plaintext gets
+     * {@link PlaintextClientSecurity#PROVIDER}, so a caller never has a null to normalise. Any
+     * long-lived resources (material source, cert rotation, its executor) are appended to
+     * {@code toClose} in acquisition order.
+     *
+     * <ul>
+     *   <li><b>mTLS</b> (keystore present): reloadable context from a {@link FileTlsMaterialSource};
+     *   with {@code tls-cert-rotation} a {@link CertRotationManager} swaps in a rotated client cert on a
+     *   dedicated single-thread executor (the client factory owns its event loop and does not expose
+     *   it, so the agent supplies its own serializing executor for the atomic swaps).</li>
+     *   <li><b>Server-authenticated TLS + token</b> (no keystore): a trust-only context loaded once;
+     *   the client presents no cert and authenticates with the token.</li>
+     * </ul>
+     */
     private static ClientSecurityProvider clientSecurity(final DisCasAgentConfig cfg,
                                                          final List<AutoCloseable> toClose,
                                                          final ReloadObserver reload)
@@ -403,6 +404,4 @@ public final class DisCasAgent implements AutoCloseable {
         }
         return ks;
     }
-
-    /** Close resources in reverse order of acquisition, best-effort. */
 }

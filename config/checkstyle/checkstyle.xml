@@ -199,5 +199,13 @@
             <property name="allowMissingParamTags" value="true"/>
             <property name="allowMissingReturnTag" value="true"/>
         </module>
+
+        <!--
+            A javadoc comment that documents nothing, because the declaration it was written for
+            moved or went away. javac reports these too, but only as -Xlint:dangling-doc-comments
+            on JDK 22+, so the baseline build stayed quiet and CI found them on the newest JDK in
+            the matrix alone. Here they fail on every JDK, which is where a doc rot check belongs.
+        -->
+        <module name="InvalidJavadocPosition"/>
     </module>
 </module>
