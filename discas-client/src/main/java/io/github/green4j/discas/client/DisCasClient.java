@@ -444,6 +444,17 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      * {@link #watch(ByteBuffer, Version, Duration)}. Feed the returned
      * {@link WatchResult#version()} back in to continue watching.
      *
+     * <p><b>A {@code SERIALIZABLE} watch can miss the very change it is waiting for.</b> Each poll
+     * is a separate {@link #get}, and consecutive polls need not reach the same node -- one may
+     * fail over, or skip a coordinator that is in the client's peer backoff. Linearizable polling
+     * is unaffected: a quorum makes the versions it observes monotonic. A serializable poll instead
+     * reports whatever the node it happened to reach has committed locally, so a later poll landing
+     * on a laggard can return a version <em>below</em> one this same watch already saw. The change
+     * is then never observed at all, and the watch completes at its deadline reporting
+     * {@link WatchResult#changed()} {@code == false}. This is a different loss
+     * from the coalescing above, and a sharper one: coalescing drops intermediate values but always
+     * converges on the latest, whereas this drops the latest and reports the state as quiet.
+     *
      * <p>{@code maxWait} is measured on a monotonic clock, so the budget is unaffected by a
      * wall-clock/NTP adjustment during the watch.
      */
