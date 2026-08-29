@@ -23,8 +23,14 @@ permissions:
   contents: read
 
 jobs:
+  # Nothing is published from a tree that has not passed `./gradlew verify`. The same reusable
+  # workflow Build calls, run here against the exact ref being released.
+  verify:
+    uses: ./.github/workflows/verify.yml
+
   publish:
     name: Publish to Sonatype
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

@@ -19,10 +19,58 @@ concurrency:
 
 permissions:
   contents: read
+  # `commits-since-last-green` reads this workflow's own run history.
+  actions: read
 
 jobs:
+  # The nightly run exists to re-roll the dice on time-dependent suites, but re-rolling them on a
+  # tree that has not changed since the last green run buys nothing. Skip in that case; any other
+  # trigger (push, PR, manual) always runs.
+  #
+  # A skipped nightly still finishes as a successful run on the same SHA, so the branch stays
+  # skipped until someone pushes. A *failed* run is not counted as green, so a broken nightly keeps
+  # retrying until it passes or the code changes.
+  commits-since-last-green:
+    name: New commits since last green run?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Compare HEAD against the last successful run
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" != "schedule" ]]; then
+            echo "Event is ${GITHUB_EVENT_NAME}, not a nightly -- running."
+            echo "should_run=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          last_green_sha="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/build.yml/runs?branch=${GITHUB_REF_NAME}&status=success&exclude_pull_requests=true&per_page=1" \
+            --jq '.workflow_runs[0].head_sha // ""')"
+
+          if [[ -z "${last_green_sha}" ]]; then
+            echo "No previous successful run found -- running."
+            echo "should_run=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [[ "${last_green_sha}" == "${GITHUB_SHA}" ]]; then
+            echo "No commits since the last green run (${last_green_sha}) -- skipping the nightly."
+            echo "should_run=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Last green run was ${last_green_sha}, HEAD is ${GITHUB_SHA} -- running."
+            echo "should_run=true" >> "${GITHUB_OUTPUT}"
+          fi
+
   gradle-build:
     name: Gradle Build (JDK ${{ matrix.java }})
+    needs: commits-since-last-green
+    if: needs.commits-since-last-green.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -43,25 +91,7 @@ jobs:
       - name: Build
         run: ./gradlew --no-daemon --stacktrace clean build
 
-  # One job calling one Gradle task. The definition of "green" lives in build.gradle
-  # (`./gradlew verify`) rather than being restated as a list of steps here -- a second copy is a
-  # second place for it to drift, and this project has already been bitten by a suite nothing ran.
-  # `build` above excludes the chaos and soak suites; this is where they run.
-  # See docs/dev/10-testing.md.
   verify:
-    name: Verify (unit + integration + chaos/soak + coverage)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 11 (the supported baseline)
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '11'
-          cache: gradle
-
-      - name: Verify
-        run: ./gradlew --no-daemon --stacktrace verify
+    needs: commits-since-last-green
+    if: needs.commits-since-last-green.outputs.should_run == 'true'
+    uses: ./.github/workflows/verify.yml

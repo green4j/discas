@@ -1,0 +1,34 @@
+name: Verify
+
+# One job calling one Gradle task. The definition of "green" lives in build.gradle
+# (`./gradlew verify`) rather than being restated as a list of steps here -- a second copy is a
+# second place for it to drift, and this project has already been bitten by a suite nothing ran.
+# `build` excludes the chaos and soak suites; this is where they run.
+# See docs/dev/10-testing.md.
+#
+# Reusable so that both Build and Release call the same definition instead of each keeping its own.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify (unit + integration + chaos/soak + coverage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 11 (the supported baseline)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: gradle
+
+      - name: Verify
+        run: ./gradlew --no-daemon --stacktrace verify
