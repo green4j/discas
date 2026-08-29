@@ -87,7 +87,11 @@ public final class PartitionablePeerTransport implements PeerTransport {
      * normal delivery.
      *
      * @return how many messages were released; zero means the hold never had anything to catch,
-     *         which usually means the test held the wrong node
+     *         because the node stayed silent throughout. It may be the wrong node, but it is just
+     *         as likely to be the right one saying nothing: a node that is not yet {@code SERVING}
+     *         sheds every peer message rather than answering it, and a client that has put it in
+     *         peer backoff routes around it. Both leave the hold empty and the test asserting
+     *         nothing, so callers should treat zero as a failure rather than a quiet pass.
      */
     public int releaseOutbound() {
         final List<Held> drained;

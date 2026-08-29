@@ -125,21 +125,30 @@ public final class TestCluster implements AutoCloseable {
     }
 
     /**
-     * Wait for the cluster to be usable -- by asking it, never by sleeping a guessed interval. With
-     * a client that means a read that succeeds; without one it means every node reporting
-     * {@code SERVING}. A fixed pause encodes how fast the machine is, which on a loaded CI box is a
-     * guess that fails tests for reasons they are not about.
+     * Wait for the cluster to be usable -- by asking it, never by sleeping a guessed interval. A
+     * fixed pause encodes how fast the machine is, which on a loaded CI box is a guess that fails
+     * tests for reasons they are not about.
+     * <p>
+     * Every node must report {@code SERVING}, and <em>then</em> a client read must succeed. A read
+     * alone is not enough: it needs a quorum, so it starts answering with the last node still
+     * replaying, and that node is invisibly dead weight. It drops every peer message it is sent
+     * ({@code DisCasNode.dispatchPeer} sheds anything that arrives before {@code SERVING}) and
+     * answers a client with {@code NOT_READY}, which puts it in the client's peer backoff and
+     * routes the next requests around it. A test that then targets that node -- holding it,
+     * isolating it, counting what it sends -- is silently testing nothing. Ordering the two checks
+     * matters for the same reason: probing only once everyone serves keeps the readiness probe from
+     * being what poisons the backoff.
      */
     public void awaitReady() throws Exception {
-        if (clients.isEmpty()) {
-            TestAwait.until("every node serves", Duration.ofSeconds(60), () -> {
-                for (final DisCasNode node : nodes.values()) {
-                    final NodeState state = node.healthSource().state();
-                    if (state != NodeState.SERVING) {
-                        throw new IllegalStateException(node.nodeId().value() + " is " + state);
-                    }
+        TestAwait.until("every node serves", Duration.ofSeconds(60), () -> {
+            for (final DisCasNode node : nodes.values()) {
+                final NodeState state = node.healthSource().state();
+                if (state != NodeState.SERVING) {
+                    throw new IllegalStateException(node.nodeId().value() + " is " + state);
                 }
-            });
+            }
+        });
+        if (clients.isEmpty()) {
             return;
         }
         TestAwait.awaitReady(clients.get(0));

@@ -99,7 +99,10 @@ class AbandonedRoundAbaTest {
             assertEquals("A", read(client, key));
 
             final int released = cluster.transport(firstCoordinator).releaseOutbound();
-            assertTrue(released > 0, "Nothing was parked: wrong coordinator held");
+            assertTrue(released > 0, "The held node sent nothing, so no round was ever abandoned "
+                    + "and this test asserted nothing: either it held the wrong node, or that node "
+                    + "was silent -- not yet SERVING, so shedding peer messages, or skipped by the "
+                    + "client's peer backoff");
 
             // The abandoned round re-reads the register and finds A -- the same value it expected.
             // Its ballot, however, was overtaken twice over, so the fence rejects it before
