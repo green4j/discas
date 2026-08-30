@@ -7,6 +7,7 @@
 
 package io.github.green4j.discas.client;
 
+import io.github.green4j.discas.TestAwait;
 import io.github.green4j.discas.TestBytes;
 import io.github.green4j.discas.TestCluster;
 import io.github.green4j.discas.client.transport.InProcessClientTransport;
@@ -106,6 +107,13 @@ class SerializableWatchLagTest {
     void aLaggingHomeCoordinatorDoesNotHideTheChange() throws Exception {
         final Version v0 = writer.put(key.duplicate(), TestBytes.utf8("v0")).get(8, TimeUnit.SECONDS);
 
+        // A put returns once a quorum has accepted it, and the third member's accept is neither
+        // waited for nor acknowledged back. Cutting member 3 off before that lands leaves it
+        // holding no value at all rather than v0 -- a member behind by the whole key, which is a
+        // different fixture from the one this test is about, and one the assertions below read as
+        // a product failure. Wait for the member to actually be one version behind.
+        awaitLaggardHolds(v0);
+
         cutOffTheLaggard();
 
         final Version v1 = writer.put(key.duplicate(), TestBytes.utf8("v1")).get(8, TimeUnit.SECONDS);
@@ -155,6 +163,21 @@ class SerializableWatchLagTest {
                 .get(30, TimeUnit.SECONDS);
         assertTrue(linearizable.changed(), "The change must be visible to a linearizable watch");
         assertEquals(v1, linearizable.version());
+    }
+
+    /**
+     * Wait until the watcher's home coordinator holds {@code version} locally -- the serializable
+     * read is served from that member's own state, so it answers this question directly.
+     */
+    private void awaitLaggardHolds(final Version version) throws Exception {
+        TestAwait.until("member " + LAGGARD + " to hold " + version, () -> {
+            final GetResult local = watcher.get(key.duplicate(), ReadConsistency.SERIALIZABLE)
+                    .get(TestAwait.PROBE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            if (!version.equals(local.version())) {
+                throw new IllegalStateException(
+                        "Member " + LAGGARD + " is still at " + local.version());
+            }
+        });
     }
 
     /** Member 3 keeps serving clients from local state, but takes part in no more rounds. */
