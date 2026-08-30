@@ -98,6 +98,25 @@ no history to replay.
 A benign spurious wake exists: a linearizable read that repairs a lagging quorum re-accepts the
 current value at a new ballot, so the version advances although nothing was written.
 
+**Serializable polls rotate; linearizable ones do not.** Poll *k* of a serializable watch starts its
+coordinator walk at offset *k*, so successive polls address successive members, and the watch keeps
+the highest-versioned answer it has seen and reports that. Both halves are needed and for different
+reasons. Rotation is what makes the change findable: a serializable read is answered from one
+member's local state, so a member that missed the accept broadcast returns the same stale answer
+however often it is asked, and without rotation the watch is blind for its whole budget with nothing
+failing to reveal it. Keeping the maximum is what stops the caller's chain regressing: a poll that
+lands on a member which is behind must not become a `WatchResult` whose `version()` -- the value the
+API tells the caller to feed into the next watch -- sits below the one the caller passed in.
+
+Linearizable polls stay at offset 0. A round contends on the register exactly as a write does, so
+rotating them would put two proposers on one key, which is the duel coordinator affinity exists to
+prevent; and a quorum already makes the versions they observe monotonic.
+
+The rotation is the only caller of the private `get(key, consistency, startAttempt)` overload, and
+it is what `PendingEntry.startAttempt` exists for: the failover walk visits `M` coordinators
+wherever it starts, so `retryOnNextPeer` counts attempts relative to the start rather than against
+`peers.size()` -- an absolute comparison cut a walk that began at offset 2 down to its remainder.
+
 ## Locks
 
 A lock is **a value in one key**, written with the same version-fenced CAS as anything else -- not a
@@ -152,26 +171,32 @@ owner keeps an `UNLOCKED` key auditable, the same reason `EXPIRED` keeps its rec
 buy is an answer once another holder has come and gone, because a record remembers only its latest
 tenant -- `NOT_HELD` is the honest reply there, and is documented as such.
 
-The lock surface is kept to what a caller can act on, and four things were dropped for failing that
-test. `Lock.validate()` asked the cluster "is this still mine?" -- an honest question with a
-dishonest use, because the answer is stale on arrival, and having it in the interface made
-check-then-act the easy thing to write when `fencingToken()` is the thing that actually holds.
-`LockInfoView` split a holder's view into acquire-time and current, but the only field that ever
-differed between the two was the wall-clock lease deadline, which by its own javadoc is the wrong
-clock for its holder; take that away and the split collapses, so both went and `remainingLease()` is
-the one lease reading a holder gets. `LockAcquireResult.token()` and its `lockInfo()` duplicated
-`lock().token()` and the lock's own snapshot, so the survivor was renamed `observed()` and now means
-one thing -- the record that stood in the way -- and is null on success. And `lock(key, ttl, ZERO,
-owner)` is routed into `tryLock` rather than through the waiting path, so the two forms cannot drift:
-before, the zero-wait case spent an extra read to answer `TIMED_OUT` where a single attempt says
-`HELD_BY_OTHER` or `HELD_BY_SELF`.
+The lock surface is kept to what a caller can act on, which is what each of these follows from.
 
-The layout version stays at 1 deliberately. Nothing about the fields changed, only which values go
-in them, so a build that predates this decodes the marker fine and merely applies the older,
-stricter `isReleased()`. It then reads the record as a lock with a lease of zero, which no clock is
-behind, so the key is still free to acquire -- the property `LockValueCodecTest` pins. Bumping the
-version would have been worse: an older reader would decode a new marker to `null` and report
-`NOT_LOCK_RECORD`, which blocks acquires outright instead of degrading a status.
+**There is no way to ask the cluster "is this still mine?".** The answer would be stale on arrival,
+and an interface that offers it makes check-then-act the easy thing to write when `fencingToken()`
+is the thing that actually holds.
+
+**A holder gets one lease reading, `remainingLease()`,** and no separate acquire-time view beside
+it. The only field that could differ between the two is the wall-clock lease deadline, which by its
+own javadoc is the wrong clock for its holder.
+
+**`observed()`, on both `LockAcquireResult` and `LockWriteResult`, means one thing:** the record
+that stood in the way, so a refused operation says what it saw without a second round trip. It is
+null where there was nothing to report -- an acquire that succeeded, or a key holding no lock
+record. A holder's own token comes from `lock().token()`.
+
+**`lock(key, ttl, ZERO, owner)` is routed into `tryLock`** rather than through the waiting path, so
+the two forms cannot drift: a single attempt answers `HELD_BY_OTHER` or `HELD_BY_SELF` rather than
+spending a read to reach `TIMED_OUT`.
+
+The release marker does not move `LAYOUT_VERSION`, and the rule behind that is worth keeping: a
+change to which *values* a field may hold is not a change to the layout, and versioning it as if it
+were costs more than it buys. A reader applying a stricter `isReleased()` than the writer intended
+still decodes the marker, reads it as a lock with a lease of zero -- which no clock is behind -- and
+leaves the key free to acquire, which is what `LockValueCodecTest` pins. A bumped layout version
+instead makes that reader decode the record to `null` and answer `NOT_LOCK_RECORD`, blocking
+acquires outright where the alternative merely degrades a status.
 
 ## Source map
 

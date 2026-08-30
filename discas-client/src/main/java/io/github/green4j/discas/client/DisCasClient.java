@@ -398,6 +398,24 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      * tombstoned.
      */
     public CompletableFuture<GetResult> get(final ByteBuffer key, final ReadConsistency consistency) {
+        return get(key, consistency, 0);
+    }
+
+    /**
+     * As {@link #get(ByteBuffer, ReadConsistency)}, starting the coordinator walk at
+     * {@code startAttempt} instead of at the key's home coordinator.
+     * <p>
+     * Only {@link #watchAttempt} passes anything but 0, and only for a serializable poll: a
+     * serializable read is answered from one member's local state, so polling the same member
+     * again is polling the same answer, and a member that is behind the cluster hides the change
+     * for as long as the watch keeps asking it. Rotating the start walks the whole membership
+     * across successive polls, which is what makes a change any reachable member holds observable.
+     * <p>
+     * Private, and it stays private: a caller choosing its own coordinator per request would
+     * defeat coordinator affinity, which is what serializes one key behind one proposer.
+     */
+    private CompletableFuture<GetResult> get(final ByteBuffer key, final ReadConsistency consistency,
+                                             final int startAttempt) {
         checkKeySize(key);
         final ReadConsistency level = consistency == null ? ReadConsistency.LINEARIZABLE : consistency;
         final CompletableFuture<GetResult> future = new CompletableFuture<>();
@@ -417,9 +435,9 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                 final ClientMessage msg =
                         new ClientMessage.ClientGetReq(clientId.value(), correlationId, routingKey, level);
                 final PendingEntry entry = new PendingEntry(
-                        future, msg, routingKey, deadlineNanosFromNow(requestDeadline));
+                        future, msg, routingKey, deadlineNanosFromNow(requestDeadline), startAttempt);
                 pending.put(correlationId, entry);
-                sendAttempt(correlationId, entry, 0);
+                sendAttempt(correlationId, entry, startAttempt);
             });
         }
         return future;
@@ -444,16 +462,21 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      * {@link #watch(ByteBuffer, Version, Duration)}. Feed the returned
      * {@link WatchResult#version()} back in to continue watching.
      *
-     * <p><b>A {@code SERIALIZABLE} watch can miss the very change it is waiting for.</b> Each poll
-     * is a separate {@link #get}, and consecutive polls need not reach the same node -- one may
-     * fail over, or skip a coordinator that is in the client's peer backoff. Linearizable polling
-     * is unaffected: a quorum makes the versions it observes monotonic. A serializable poll instead
-     * reports whatever the node it happened to reach has committed locally, so a later poll landing
-     * on a laggard can return a version <em>below</em> one this same watch already saw. The change
-     * is then never observed at all, and the watch completes at its deadline reporting
-     * {@link WatchResult#changed()} {@code == false}. This is a different loss
-     * from the coalescing above, and a sharper one: coalescing drops intermediate values but always
-     * converges on the latest, whereas this drops the latest and reports the state as quiet.
+     * <p><b>A {@code SERIALIZABLE} watch rotates over the membership</b>, because a poll answered
+     * from one member's local state says nothing about the cluster and asking that member again
+     * says it no louder. Successive polls therefore address successive members, and the result
+     * carries the <em>highest</em> version any of them returned. Two things follow. A committed
+     * change is held by a majority by definition, so a watch that gets a full lap of polls in and
+     * reaches enough members observes it -- a member that missed the accept broadcast can no
+     * longer hide it. And {@link WatchResult#version()}, which this API asks the caller to feed
+     * into the next watch, never falls below the version the caller passed in, so the chain cannot
+     * walk backwards.
+     *
+     * <p>What a serializable watch still cannot promise is an answer inside a budget too short for
+     * a lap: with {@code maxWait} on the order of one poll, which member answered is again the
+     * whole story. Linearizable polling does not rotate and does not need to -- each poll is a
+     * round, so a quorum already makes the versions it observes monotonic, and spreading those
+     * rounds over coordinators would put two proposers on one key.
      *
      * <p>{@code maxWait} is measured on a monotonic clock, so the budget is unaffected by a
      * wall-clock/NTP adjustment during the watch.
@@ -469,7 +492,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         }
         final Version since = sinceVersion == null ? Version.INITIAL : sinceVersion;
         final ReadConsistency level = consistency == null ? ReadConsistency.LINEARIZABLE : consistency;
-        return watchAttempt(key.duplicate(), since, deadlineNanosFromNow(maxWait), level);
+        return watchAttempt(key.duplicate(), since, deadlineNanosFromNow(maxWait), level, 0, null);
     }
 
     /**
@@ -1491,24 +1514,56 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         }, asyncCallbacks);
     }
 
+    /**
+     * One poll of a watch, and the recursion that makes it a blocking query.
+     * <p>
+     * Two things travel with it. {@code poll} counts the polls made, and for a
+     * {@link ReadConsistency#SERIALIZABLE} watch it is also the offset that poll's coordinator
+     * walk starts at, so successive polls address successive members. A serializable read is
+     * answered from one member's local state and nothing about polling it again makes that state
+     * newer -- so a watch that keeps asking one member is blind for as long as that member is
+     * behind, and rotating is what turns "the member I happened to ask has not seen it" into "no
+     * reachable member has seen it". A linearizable poll does not rotate: it runs a full round, so
+     * it contends on the register like a write does, and spreading those rounds over coordinators
+     * would break the affinity that serializes one key behind one proposer.
+     * <p>
+     * {@code best} is the highest-versioned answer any poll has returned. It is what the result
+     * is built from, so a later poll landing on a member that is behind can no longer walk the
+     * caller backwards -- which matters because {@link WatchResult#version()} is documented as the
+     * value to feed into the next watch, and a version below the caller's own would make that
+     * chain regress.
+     */
     private CompletableFuture<WatchResult> watchAttempt(
             final ByteBuffer key,
             final Version since,
             final long deadlineNanos,
-            final ReadConsistency level) {
-        return get(key.duplicate(), level).handleAsync((observed, error) -> {
+            final ReadConsistency level,
+            final int poll,
+            final GetResult best) {
+        final int startAttempt = level == ReadConsistency.SERIALIZABLE ? poll : 0;
+        return get(key.duplicate(), level, startAttempt).handleAsync((observed, error) -> {
             if (error != null) {
-                return onWatchPollFailed(key, since, deadlineNanos, level, unwrap(error));
+                return onWatchPollFailed(key, since, deadlineNanos, level, poll, best, unwrap(error));
             }
-            if (observed.version().compareTo(since) > 0) {
-                return CompletableFuture.completedFuture(WatchResult.changed(observed));
+            final GetResult latest = moreRecent(best, observed);
+            if (latest.version().compareTo(since) > 0) {
+                return CompletableFuture.completedFuture(WatchResult.changed(latest));
             }
             if (elapsed(deadlineNanos)) {
-                return CompletableFuture.completedFuture(WatchResult.unchanged(observed));
+                return CompletableFuture.completedFuture(WatchResult.unchanged(latest));
             }
             return delay(randomWatchBackoff()).thenComposeAsync(ignored ->
-                    watchAttempt(key.duplicate(), since, deadlineNanos, level), asyncCallbacks);
+                    watchAttempt(key.duplicate(), since, deadlineNanos, level, poll + 1, latest),
+                    asyncCallbacks);
         }, asyncCallbacks).thenComposeAsync(next -> next, asyncCallbacks);
+    }
+
+    /** The later of two observations of one key, {@code null} counting as "nothing seen yet". */
+    private static GetResult moreRecent(final GetResult best, final GetResult observed) {
+        if (best == null) {
+            return observed;
+        }
+        return observed.version().compareTo(best.version()) > 0 ? observed : best;
     }
 
     /**
@@ -1525,12 +1580,21 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      * Not everything is worth retrying. A caller error fails identically forever, so stalling for
      * the full budget would turn an immediate answer into a long wait for the same one; a closed
      * client has nothing to retry against. Both propagate at once.
+     * <p>
+     * A failure at the deadline ends the watch only when no poll ever succeeded. Once one has,
+     * the caller asked a question that has an answer -- "it had not changed as of what I saw" --
+     * and throwing that away because the <em>last</em> poll happened to address a member that was
+     * down would report a failure the watch does not have. It also keeps the rotation above from
+     * making watches flakier: rotating means later polls address members the first one never did,
+     * so a member being down is now something a healthy watch can meet.
      */
     private CompletableFuture<WatchResult> onWatchPollFailed(
             final ByteBuffer key,
             final Version since,
             final long deadlineNanos,
             final ReadConsistency level,
+            final int poll,
+            final GetResult best,
             final Throwable cause) {
         if (cause instanceof ClientLifecycleException
                 || (cause instanceof DisCasOperationException
@@ -1538,10 +1602,13 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             return failedWatch(cause);
         }
         if (elapsed(deadlineNanos)) {
-            return failedWatch(cause);
+            return best == null
+                    ? failedWatch(cause)
+                    : CompletableFuture.completedFuture(WatchResult.unchanged(best));
         }
         return delay(randomWatchBackoff()).thenComposeAsync(ignored ->
-                watchAttempt(key.duplicate(), since, deadlineNanos, level), asyncCallbacks);
+                watchAttempt(key.duplicate(), since, deadlineNanos, level, poll + 1, best),
+                asyncCallbacks);
     }
 
     private static CompletableFuture<WatchResult> failedWatch(final Throwable cause) {
@@ -2071,7 +2138,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         // skips it instead of paying a round trip to be refused again.
         recordPeerFailure(index);
         final int nextAttempt = entry.currentAttempt + 1;
-        if (nextAttempt >= peers.size()) {
+        if (nextAttempt - entry.startAttempt >= peers.size()) {
             return false; // every peer tried; report the last node's verdict
         }
         observer.requestFailedOver(pickPeer(entry.routingKey, entry.currentAttempt), code);
@@ -2207,6 +2274,14 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
          * nobody answers.
          */
         final long deadlineNanos;
+        /**
+         * The attempt offset this request's walk began at, which is 0 for everything except a
+         * serializable watch poll (see {@link #watchAttempt}). Only
+         * {@link #retryOnNextPeer} reads it, and only to count attempts relative to it: the walk
+         * visits {@code M} coordinators wherever it starts, and comparing an absolute offset
+         * against {@code peers.size()} would cut a walk that started late down to its remainder.
+         */
+        final int startAttempt;
         int currentAttempt;
         EventLoop.TimerHandle timerHandle;
         /**
@@ -2219,11 +2294,18 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
 
         PendingEntry(final CompletableFuture<?> future, final ClientMessage request,
                      final ByteBuffer routingKey, final long deadlineNanos) {
+            this(future, request, routingKey, deadlineNanos, 0);
+        }
+
+        PendingEntry(final CompletableFuture<?> future, final ClientMessage request,
+                     final ByteBuffer routingKey, final long deadlineNanos,
+                     final int startAttempt) {
             this.future = future;
             this.request = request;
             this.routingKey = routingKey;
             this.deadlineNanos = deadlineNanos;
-            this.currentAttempt = 0;
+            this.startAttempt = startAttempt;
+            this.currentAttempt = startAttempt;
         }
     }
 

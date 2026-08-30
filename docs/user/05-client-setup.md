@@ -140,10 +140,12 @@ event loop it owns. It throws `ClientLifecycleException` if the loop does not st
 `shutdownAwaitTimeout` -- worth knowing, because that throw comes out of a try-with-resources.
 
 **Sharing a loop.** A client co-located with a node can run on the node's loop instead of starting a
-thread of its own:
+thread of its own -- here the in-process form, for a cluster that is entirely in this JVM; see
+[6. Embedding a node](06-embedding-a-node.md#a-co-located-client) for the form that reaches the
+local member in process and the rest over TCP:
 
 ```java
-DisCasClient client = DisCasClientFactory.createColocated(
+DisCasClient client = DisCasClientFactory.createInProcess(
         ClientId.of("embedded"), node.loop(), List.of(NodeId.of("1"), NodeId.of("2")));
 ```
 

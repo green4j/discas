@@ -51,7 +51,7 @@ Under `io.github.green4j.discas`:
 |---|---|---|
 | `Wal` | node | `FileWal`; `InMemoryWal` in tests |
 | `PeerTransport` | node | `TcpPeerTransport`; in-process and fault-injecting variants in tests |
-| `ClientTransport` | client | `TcpClientTransport`, `InProcessClientTransport` |
+| `ClientTransport` | client | `TcpClientTransport`, `InProcessClientTransport`, `ColocatedClientTransport` (the local member in process, the rest over TCP) |
 | `ClientIngress` / `ResponseSink` | common | the node's client handler / whichever transport created it |
 | `NodeObserver` / `ClientObserver` / `ReloadObserver` | node / client / common | logging, metrics, peer-state and stderr decorators |
 | `Members<T>` | node | `FileMembers` (reloadable), `InMemoryMembers` |
@@ -74,9 +74,9 @@ Under `io.github.green4j.discas`:
 
 **Client messages** (`ClientMessage`): get, put, cas, delete, scan and their responses.
 
-**Versions**: every versioned surface is at 1, because nothing has been released yet --
-`TransportProtocol.PROTOCOL_VERSION`, `StorageFormat.FORMAT_VERSION` with its `LAYOUT_VERSION`, and
-`DumpCodec.FORMAT_VERSION`. Each is bumped on the first incompatible change **after** a release.
+**Versions**: `TransportProtocol.PROTOCOL_VERSION`, `StorageFormat.FORMAT_VERSION` with its
+`LAYOUT_VERSION`, and `DumpCodec.FORMAT_VERSION`. Each is bumped on the first incompatible change
+**after** a release, so each constant is the authority on its own value -- read it there.
 
 ## The enums worth reading first
 

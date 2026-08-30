@@ -6,10 +6,12 @@ Published to Maven Central under `io.github.green4j`:
 
 ```groovy
 // build.gradle
+def discasVersion = '<the version you want>'   // see Maven Central for what is published
+
 dependencies {
-    implementation 'io.github.green4j:discas-client:0.0.1'
+    implementation "io.github.green4j:discas-client:$discasVersion"
     // and, only if you embed a node:
-    implementation 'io.github.green4j:discas-node:0.0.1'
+    implementation "io.github.green4j:discas-node:$discasVersion"
 }
 ```
 

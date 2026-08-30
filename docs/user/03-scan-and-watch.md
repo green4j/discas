@@ -118,6 +118,16 @@ client.watch(utf8("config/timeout"), seen, Duration.ofSeconds(30),
 `maxWait` is measured on a monotonic clock, so an NTP step during the wait cannot shorten or extend
 it.
 
+**A serializable watch rotates over the members.** A serializable poll is answered from one member's
+local state, so asking the same member again returns the same answer no matter how many times you
+ask -- and a member that missed a commit would hide it for the whole wait. Successive polls
+therefore address successive members, and the result carries the highest version any of them
+returned. A committed change is held by a majority by definition, so a watch that gets a full lap of
+polls in will find it; and the version you are handed back never falls below the one you passed in,
+so the loop above cannot walk backwards. The limit that remains is arithmetic: a `maxWait` on the
+order of a single poll does not complete a lap, and then which member answered is again the whole
+story. Linearizable polling does not rotate and does not need to -- every poll is a round.
+
 **Coalescing.** If the key changed several times during the wait, `changed()` is true and you get
 the *latest* state; intermediate values are skipped. A register keeps only its current value, so
 there is no history to replay. If you need every transition, discas is the wrong tool for that part

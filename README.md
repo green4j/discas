@@ -157,7 +157,8 @@ are `SecureClientAclExample` and `SecureClusterFileMembersExample` in `discas-ex
 
 ## Build
 
-`./gradlew build` compiles and tests everything; every module targets `--release 11`. The module
+`./gradlew build` compiles and tests everything; every module targets the `--release` set by
+`srcJavaVersion` in `gradle.properties`. The module
 map, the task/tag/profile matrix, and how to run a local cluster are
 [2. Development environment](docs/dev/02-development.md) and
 [12. Reference](docs/dev/12-reference.md).

@@ -2,7 +2,9 @@
 
 A three-node cluster and an HTTP agent on your laptop, and a key written and read back with `curl`.
 
-You need a JDK 17 or newer to build (the artifacts themselves target Java 11) and `curl`.
+You need a JDK that can build the project -- see `srcJavaVersion` in `gradle.properties` for the
+version the artifacts target, and the CI matrix in `.github/workflows/build.yml` for the JDKs the
+build is actually run on -- and `curl`.
 
 > This is a **throwaway cluster on loopback with no authentication and no TLS** -- the defaults are
 > open, which is the right setting for this page and the wrong one for anything else. Before running

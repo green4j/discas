@@ -25,6 +25,7 @@ import io.github.green4j.discas.client.lock.Lock;
 import io.github.green4j.discas.client.lock.LockAcquireResult;
 import io.github.green4j.discas.client.lock.LockWriteResult;
 import io.github.green4j.discas.client.transport.InProcessClientBootstrap;
+import io.github.green4j.discas.client.transport.ColocatedClientBootstrap;
 import io.github.green4j.discas.client.transport.TcpClientBootstrap;
 import io.github.green4j.discas.common.client.ClientErrorCode;
 import io.github.green4j.discas.common.client.ClientTransportConfig;
@@ -367,8 +368,8 @@ public final class UserDocSnippets {
         new TcpClientBootstrap(nodes, ClientTransportConfig.defaults(), token, security, observer);
     }
 
-    static void colocatedClient(final DisCasNode node) {
-        final DisCasClient client = DisCasClientFactory.createColocated(
+    static void inProcessClientOnNodeLoop(final DisCasNode node) {
+        final DisCasClient client = DisCasClientFactory.createInProcess(
                 ClientId.of("embedded"), node.loop(), List.of(NodeId.of("1"), NodeId.of("2")));
     }
 
@@ -420,6 +421,20 @@ public final class UserDocSnippets {
         node.healthSource().state();
         node.addLifecycleCloseable(clientServer);
         return node;
+    }
+
+    static void colocatedClient(final Map<NodeId, InetSocketAddress> clientAddresses,
+                                final String token, final DisCasNode node) {
+        final DisCasClient client = DisCasClientFactory.createColocated(
+                ClientId.of("my-service"),
+                new ColocatedClientBootstrap(NodeId.of("1"),
+                        new TcpClientBootstrap(clientAddresses,
+                                ClientTransportConfig.defaults(), token)));
+
+        final ColocatedClientBootstrap bootstrap = new ColocatedClientBootstrap(NodeId.of("1"),
+                new TcpClientBootstrap(clientAddresses, ClientTransportConfig.defaults(), token));
+        final DisCasClient onNodeLoop = DisCasClientFactory.createColocated(
+                ClientId.of("my-service"), bootstrap, node.loop(), DisCasClientConfig.defaults());
     }
 
     static FileWal durability() throws IOException {

@@ -127,9 +127,9 @@ connections are undisturbed.
 
 ## How to change it safely
 
-- **Wire changes are compatibility changes.** `TransportProtocol.PROTOCOL_VERSION` (currently 1) is
-  exchanged once per connection and is what lets the codecs resolve enums strictly -- an unrecognised
-  byte cannot have come from a legitimate counterpart. Adding a field means bumping it.
+- **Wire changes are compatibility changes.** `TransportProtocol.PROTOCOL_VERSION` is exchanged once
+  per connection and is what lets the codecs resolve enums strictly -- an unrecognised byte cannot
+  have come from a legitimate counterpart. Adding a field means bumping it.
 - **Never authorize on the `senderId` in a message.** It is self-declared; the bound `ClientId` is
   the authenticated one.
 - **A new `PeerHelloRespStatus` carries an explicit wire byte**, never the `ordinal()` -- reordering

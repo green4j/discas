@@ -69,13 +69,15 @@ Three versioned surfaces, each refusing what it cannot read rather than misreadi
 
 | Surface | Where | Rule |
 |---|---|---|
-| Peer/client wire | `TransportProtocol.PROTOCOL_VERSION` (1) | exchanged once per connection in the hello; a mismatch closes it with `PROTOCOL_MISMATCH`. This gate is what lets the codecs resolve enums strictly |
-| On-disk | `StorageFormat.FORMAT_VERSION` (1), `LAYOUT_VERSION` (1) | an incompatible file is refused at open |
-| Dump file | `DumpCodec.FORMAT_VERSION` (1) | refused on read |
+| Peer/client wire | `TransportProtocol.PROTOCOL_VERSION` | exchanged once per connection in the hello; a mismatch closes it with `PROTOCOL_MISMATCH`. This gate is what lets the codecs resolve enums strictly |
+| On-disk | `StorageFormat.FORMAT_VERSION`, `LAYOUT_VERSION` | an incompatible file is refused at open |
+| Dump file | `DumpCodec.FORMAT_VERSION` | refused on read |
 
-**All four are 1.** These numbers distinguish one *released* format from another, so each is bumped
-on the first incompatible change after a release and never before one -- a value above the number of
-shipped formats claims a compatibility history with no migration code behind it.
+These numbers distinguish one *released* format from another, so each is bumped on the first
+incompatible change after a release and never before one -- a value above the number of shipped
+formats claims a compatibility history with no migration code behind it. The constants are the
+authority on their own values, which is why none is repeated here: a version written down in two
+places is a version that will disagree with itself.
 
 Wire enums carry an **explicit byte**, never `ordinal()`, so reordering constants cannot change what
 travels. `ClientErrorCode` is the deliberate exception to strictness on the read side: unknown values

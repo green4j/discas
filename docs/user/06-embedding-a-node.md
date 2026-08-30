@@ -3,9 +3,10 @@
 ## Why you would
 
 A node is a Java object with an event loop, not a daemon. Running one inside your service removes a
-hop and a deployment unit: your process *is* a cluster member, and a co-located client reaches it
-without a socket. The trade is that your process's lifecycle becomes the node's -- a restart of your
-service is a restart of a member.
+deployment unit and a hop: your process *is* a cluster member, and a
+[co-located client](#a-co-located-client) reaches that member without a socket and without a codec.
+The trade is that your process's lifecycle becomes the node's -- a restart of your service is a
+restart of a member.
 
 You need `discas-node` on the classpath in addition to `discas-client`.
 
@@ -191,16 +192,69 @@ memory.
 
 ## A co-located client
 
+Your service embeds a member, so one of the coordinators it talks to is *itself*. A co-located
+client is an ordinary cluster client that reaches that one in process -- no socket, and no codec
+either: the request is handed to the node as an object.
+
 ```java
 DisCasClient client = DisCasClientFactory.createColocated(
+        ClientId.of("my-service"),
+        new ColocatedClientBootstrap(NodeId.of("1"),      // the member this process runs
+                new TcpClientBootstrap(clientAddresses,   // every member, this one included
+                        ClientTransportConfig.defaults(), token)));
+```
+
+Everything else is unchanged: the same coordinator choice, the same failover, the same `scan`. Three
+things are worth knowing before you wire it.
+
+**Give it the whole membership, in the same order as everyone else.** Coordinator affinity follows a
+member's position in the client's list, so a client that lists the members differently sends the
+same key to a different coordinator than the rest of the fleet does -- and two proposers on one key
+is a [ballot duel](../operator/04-quorum.md#same-key-contention), not a faster path. Leaving the
+local member out of the map is refused at construction for that reason.
+
+**It still needs credentials.** All but one of its hops are ordinary client connections, and they
+authenticate exactly as any client's do. A colocated client built without the token or the TLS
+material its cluster requires works for the keys that route to the local member and fails for every
+other key, which looks like a flapping network rather than the configuration mistake it is.
+
+**In process, the identity is asserted rather than proved.** There is no handshake on that path, so
+the node takes the `ClientId` the client was built with as the trusted one. Authorization is
+unaffected -- a bound [client ACL](../operator/05-access.md) grants and refuses by that id on both
+paths alike -- but anything in your JVM can construct a client under any identity. That is the
+honest reading of a caller who is already inside the process, and it is why there is no fallback
+from the local path to the loopback: a transport that quietly swapped an asserted identity for a
+proven one would make which of the two applied depend on which member a key happened to hash to. A
+local node that is closed or not yet constructed is simply an unreachable coordinator, and the
+request moves on to another.
+
+### On the node's loop
+
+```java
+DisCasClient client = DisCasClientFactory.createColocated(
+        ClientId.of("my-service"), bootstrap, node.loop(), DisCasClientConfig.defaults());
+```
+
+The whole embedded deployment then runs on **one thread**. Closing the client leaves the loop to the
+node.
+
+The rule that completions must not block now has teeth: a blocking continuation stops consensus,
+timers and peer I/O together. Hop to your own executor for anything real. On its own loop -- the
+default above -- a blocking continuation costs you the client and leaves the node running.
+
+### When the whole cluster is in one JVM
+
+For a test or a single-process demo, where no member is in another process, `createInProcess`
+resolves *every* peer through the in-process registry and opens no sockets at all:
+
+```java
+DisCasClient client = DisCasClientFactory.createInProcess(
         ClientId.of("my-service"), node.loop(), nodeIds);
 ```
 
-This shares the node's event loop, so the whole embedded deployment is **one thread**. Closing the
-client leaves the loop to the node.
-
-The rule that completions must not block now has teeth: a blocking continuation stops consensus,
-timers and peer I/O together. Hop to your own executor for anything real.
+This is the client the [in-process example](#in-process-a-cluster-inside-one-jvm) above uses. It
+cannot reach a member in another JVM, so it is not the client for a distributed embedded
+deployment -- that is `createColocated`.
 
 ## Lifecycle
 
