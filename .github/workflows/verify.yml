@@ -6,7 +6,8 @@ name: Verify
 # `build` excludes the chaos and soak suites; this is where they run.
 # See docs/dev/10-testing.md.
 #
-# Reusable so that both Build and Release call the same definition instead of each keeping its own.
+# Reusable so that both Check and Verify, and Release, call the same definition instead of each
+# keeping its own.
 on:
   workflow_call:
   workflow_dispatch:

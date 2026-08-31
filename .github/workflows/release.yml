@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   # Nothing is published from a tree that has not passed `./gradlew verify`. The same reusable
-  # workflow Build calls, run here against the exact ref being released.
+  # workflow Check and Verify calls, run here against the exact ref being released.
   verify:
     uses: ./.github/workflows/verify.yml
 

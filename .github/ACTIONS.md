@@ -2,12 +2,15 @@
 
 This directory contains CI/CD workflows for `discas`:
 
-- `workflows/build.yml` - regular build and test validation.
+- `workflows/build.yml` - **Check and Verify**: `clean build` across the JDK matrix, plus `verify`.
+- `workflows/verify.yml` - **Verify**: the definition of "green", reusable so the workflow above and
+  `release.yml` share one copy of it rather than each restating the steps.
 - `workflows/release.yml` - publish artifacts to Sonatype (snapshots and releases).
 
-## Build Workflow
+## Check and Verify Workflow
 
-`build.yml` runs on:
+`build.yml` (named **Check and Verify** in the Actions UI -- it runs both `check`, across the JDK
+matrix, and `verify`) runs on:
 
 - `pull_request` to `main`
 - `push` to `main`
