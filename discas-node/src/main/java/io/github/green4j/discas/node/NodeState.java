@@ -12,13 +12,13 @@ package io.github.green4j.discas.node;
  * what traffic is answered, what the probes report and what the log says are all derived from it.
  *
  * <pre>
- *   REPLAYING --has state----------------------> SERVING --> CLOSING
+ *   REPLAYING --has state----------------------&gt; SERVING --&gt; CLOSING
  *      |                                          ^
- *      +--none--> AWAITING_FLOOR --floor adopted--+
+ *      +--none--&gt; AWAITING_FLOOR --floor adopted--+
  *                    ^     |
  *                    +-----+ keeps asking
  *
- *   any state --> FAILED   (nothing continues from here; the loop shuts down)
+ *   any state --&gt; FAILED   (nothing continues from here; the loop shuts down)
  * </pre>
  *
  * <p>The single distinction that makes {@link #AWAITING_FLOOR} a state rather than a detail of
