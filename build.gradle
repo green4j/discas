@@ -71,6 +71,11 @@ def addDepsFromProjects(pom, projects) {
 ext {
     discasSrcJavaVersion = JavaVersion.toVersion(srcJavaVersion)
 
+    // Sources are pure ASCII, and are never decoded with whatever encoding the build machine
+    // happens to default to. javac reports any non-ASCII byte as an unmappable character. Write
+    // one in a literal as \\uXXXX, and in javadoc as its ASCII equivalent ("--").
+    discasSourceEncoding = 'US-ASCII'
+
     isRelease = !projectVersion.endsWith('-SNAPSHOT')
 
     sonatypeReleasesRepoUrl = isRelease
@@ -182,8 +187,12 @@ configure([commonProject,
         // "bootstrap class path not set" note -- which -Werror turns into a failure -- off newer JDKs.
         options.release = discasSrcJavaVersion.majorVersion as Integer
         options.compilerArgs.addAll(['-Xlint:all', '-Werror']) // all warnings, treated as errors
-        options.encoding = 'UTF-8'
+        options.encoding = discasSourceEncoding
         options.deprecation = true
+    }
+
+    compileTestJava {
+        options.encoding = discasSourceEncoding
     }
 
     javadoc {

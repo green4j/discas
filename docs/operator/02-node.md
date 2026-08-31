@@ -36,13 +36,13 @@ Both carry `"state"`, the node's position in the start model:
 | `FAILED` | stopped by something it cannot continue past | 503 | 503 |
 
 ```
-REPLAYING ──has state──────────────────────▶ SERVING ──▶ CLOSING
-   │                                          ▲
-   └──none──▶ AWAITING_FLOOR ──floor adopted──┘
-                 ▲     │
-                 └─────┘ keeps asking
+REPLAYING --has state----------------------> SERVING --> CLOSING
+   |                                          ^
+   +--none--> AWAITING_FLOOR --floor adopted--+
+                 ^     |
+                 +-----+ keeps asking
 
-any state ──▶ FAILED
+any state --> FAILED
 ```
 
 **`AWAITING_FLOOR` answering `/health` 200 is deliberate.** The node is healthy and waiting on its

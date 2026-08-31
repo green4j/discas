@@ -37,13 +37,13 @@ themselves after each completion rather than on a fixed repeat.
 derive from it:
 
 ```
-REPLAYING ──has state──────────────────────▶ SERVING ──▶ CLOSING
-   │                                          ▲
-   └──none──▶ AWAITING_FLOOR ──floor adopted──┘
-                 ▲     │
-                 └─────┘ keeps asking
+REPLAYING --has state----------------------> SERVING --> CLOSING
+   |                                          ^
+   +--none--> AWAITING_FLOOR --floor adopted--+
+                 ^     |
+                 +-----+ keeps asking
 
-any state ──▶ FAILED   (nothing continues; the loop shuts down)
+any state --> FAILED   (nothing continues; the loop shuts down)
 ```
 
 - **REPLAYING** -- reading the snapshot and the WAL tail in batches, yielding to the loop between

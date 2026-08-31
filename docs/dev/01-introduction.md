@@ -30,12 +30,12 @@ is what `DisCasNodeStarter` wraps to make a standalone process.
 ## Module graph
 
 ```
-discas-common ──┬── discas-node ────┬── discas-admin
-                │                   │
-                ├── discas-client ──┤
-                │                   └── discas-example
-                ├── discas-agent          discas-performance
-                └── (discas-int-test depends on all)
+discas-common --+-- discas-node ----+-- discas-admin
+                |                   |
+                +-- discas-client --+
+                |                   +-- discas-example
+                +-- discas-agent          discas-performance
+                +-- (discas-int-test depends on all)
 ```
 
 `discas-common` depends on nothing. It carries what both ends of a wire must agree on -- the client

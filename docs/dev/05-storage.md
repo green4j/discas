@@ -39,9 +39,9 @@ have no way back.
 
 ```
 data-dir/
-├── incarnation            which run of this storage this is
-├── *.wal                  segments, rolled at walMaxFileBytes (64 MiB)
-└── *.snapshot             snapshots, snapshotRetentionCount (2) kept
++-- incarnation            which run of this storage this is
++-- *.wal                  segments, rolled at walMaxFileBytes (64 MiB)
++-- *.snapshot             snapshots, snapshotRetentionCount (2) kept
 ```
 
 Five record kinds (`Wal.Entry`): `Promise`, `Accept`, `Purge`, `BallotBump` (proposer's reserved

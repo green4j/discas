@@ -78,13 +78,13 @@ a Deployment behind a horizontal autoscaler.
 discas reserves no well-known port numbers; every one below is something you chose.
 
 ```
-   client / agent ──────▶ client port ──┐
-                                        │
-                             ┌──────────▼──────────┐
-                             │     discas-node     │
-                             └───▲─────────────┬───┘
-                       peer port │             │ observability port
-                                 │             ▼
+   client / agent ------> client port --+
+                                        |
+                             +----------v----------+
+                             |     discas-node     |
+                             +---^-------------+---+
+                       peer port |             | observability port
+                                 |             v
                         other members    Prometheus / probes
 ```
 
