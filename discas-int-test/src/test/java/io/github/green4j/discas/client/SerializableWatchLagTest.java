@@ -170,7 +170,7 @@ class SerializableWatchLagTest {
      * read is served from that member's own state, so it answers this question directly.
      */
     private void awaitLaggardHolds(final Version version) throws Exception {
-        TestAwait.until("member " + LAGGARD + " to hold " + version, () -> {
+        TestAwait.until("Member " + LAGGARD + " to hold " + version, () -> {
             final GetResult local = watcher.get(key.duplicate(), ReadConsistency.SERIALIZABLE)
                     .get(TestAwait.PROBE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
             if (!version.equals(local.version())) {

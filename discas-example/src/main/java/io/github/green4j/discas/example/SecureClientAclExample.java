@@ -17,6 +17,7 @@ import io.github.green4j.discas.common.client.auth.TokenClientAuthenticator;
 import io.github.green4j.discas.common.identity.ClientId;
 import io.github.green4j.discas.common.identity.ClusterId;
 import io.github.green4j.discas.common.identity.NodeId;
+import io.github.green4j.discas.common.transport.ListenSocket;
 import io.github.green4j.discas.node.DisCasNode;
 import io.github.green4j.discas.node.DisCasNodeFactory;
 import io.github.green4j.discas.node.NodeConfig;
@@ -30,7 +31,6 @@ import io.github.green4j.discas.node.wal.FileWal;
 import io.github.green4j.discas.node.wal.StorageConfig;
 
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
@@ -67,11 +67,12 @@ public final class SecureClientAclExample {
         final Path aclFile = baseDir.resolve("client-acl.conf");
         Files.writeString(aclFile, "acl." + WEB.value() + " = app/:GPC\n");
 
-        final int peerPort;
-        try (ServerSocket a = new ServerSocket(0)) {
-            peerPort = a.getLocalPort();
-        }
-        final InetSocketAddress peerAddr = new InetSocketAddress("127.0.0.1", peerPort);
+        // Bind first and take the address from the socket, rather than picking a port with a
+        // throwaway probe and binding it a moment later: that leaves a window in which anything --
+        // including the kernel, handing an ephemeral port to some outbound connection -- can take
+        // the port first. The bound socket goes straight to the bootstrap below.
+        final ListenSocket peerSocket = ListenSocket.bind(new InetSocketAddress("127.0.0.1", 0));
+        final InetSocketAddress peerAddr = peerSocket.address();
 
         final TcpTransportConfig peerConfig = TcpTransportConfig.defaults();
         final ClientTransportConfig clientConfig = ClientTransportConfig.defaults();
@@ -85,7 +86,8 @@ public final class SecureClientAclExample {
 
         final DisCasNode node = DisCasNodeFactory.create(
                 new NodeConfig(NODE, CLUSTER, 1),
-                new TcpPeerBootstrap(peerAddr, InMemoryMembers.ofTcp(Map.of(NODE, peerAddr)), peerConfig),
+                new TcpPeerBootstrap(peerSocket, InMemoryMembers.ofTcp(Map.of(NODE, peerAddr)),
+                        peerConfig),
                 wal);
 
         // Authentication: token store (re-read on request); Authorization: file ACL.

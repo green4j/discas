@@ -17,6 +17,7 @@ import io.github.green4j.discas.common.client.InProcessClientRegistry;
 import io.github.green4j.discas.common.identity.ClientId;
 import io.github.green4j.discas.common.identity.ClusterId;
 import io.github.green4j.discas.common.identity.NodeId;
+import io.github.green4j.discas.common.transport.ListenSocket;
 import io.github.green4j.discas.node.transport.TcpClientServerBootstrap;
 import io.github.green4j.discas.node.transport.TcpClientServerTransport;
 import io.github.green4j.discas.node.DisCasNode;
@@ -31,7 +32,6 @@ import io.github.green4j.discas.node.wal.FileWal;
 import io.github.green4j.discas.node.wal.StorageConfig;
 
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -127,13 +127,22 @@ final class ExampleCluster {
         final ClientTransportConfig clientTransportConfig = defaultClientTransportConfig();
         final RunningCluster cluster = new RunningCluster(nodeIds, true);
 
+        final Map<NodeId, ListenSocket> peerSockets = new HashMap<>();
         final Map<NodeId, InetSocketAddress> clusterAddresses = new HashMap<>();
         final Map<NodeId, InetSocketAddress> clientAddresses = new HashMap<>();
         // Peer addresses have to exist before any node does -- every member's address is in the
-        // members map each node validates at construction. Client addresses do not: each client
+        // members map each node validates at construction. Binding the peer sockets here, and handing
+        // each bound socket to its bootstrap below, is what lets that happen without choosing a
+        // port in advance: the address is published from a socket already holding it, so there is
+        // no window in which the port is merely earmarked and something else can take it. Picking
+        // a port with a throwaway probe and binding it later does have that window, and loses it
+        // often enough to matter -- :0 draws from the ephemeral range, which is the same pool the
+        // kernel hands to any outbound connection. Client addresses work the same way: each client
         // server binds :0 below and the map is filled from the port it actually got.
         for (final NodeId nodeId : nodeIds) {
-            clusterAddresses.put(nodeId, new InetSocketAddress("127.0.0.1", freePort()));
+            final ListenSocket peerSocket = ListenSocket.bind(new InetSocketAddress("127.0.0.1", 0));
+            peerSockets.put(nodeId, peerSocket);
+            clusterAddresses.put(nodeId, peerSocket.address());
         }
 
         for (final NodeId nodeId : nodeIds) {
@@ -151,7 +160,7 @@ final class ExampleCluster {
             final DisCasNode node = DisCasNodeFactory.create(
                     new NodeConfig(nodeId, EXAMPLE_CLUSTER, clusterAddresses.size()),
                     new TcpPeerBootstrap(
-                            clusterAddresses.get(nodeId),
+                            peerSockets.get(nodeId),
                             InMemoryMembers.ofTcp(clusterAddresses),
                             peerTransportConfig),
                     fileWal);
@@ -231,12 +240,6 @@ final class ExampleCluster {
         // maxQueuedOutBytes / maxInflightBytes must hold a max-size client message
         // (see ClientMessageCodec.MAX_MESSAGE_BYTES, derived from KvLimits).
         return ClientTransportConfig.defaults();
-    }
-
-    private static int freePort() throws Exception {
-        try (ServerSocket serverSocket = new ServerSocket(0)) {
-            return serverSocket.getLocalPort();
-        }
     }
 
     private static final class NoopWal implements Wal {

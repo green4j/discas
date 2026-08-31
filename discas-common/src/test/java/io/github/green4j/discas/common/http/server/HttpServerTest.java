@@ -617,6 +617,10 @@ class HttpServerTest {
         assertEquals(200, resp.statusCode());
         assertEquals("ok", new String(resp.body(), StandardCharsets.US_ASCII));
         // setBody-on-chunked, addChunk-after-endChunks, add-after-commit each threw IllegalStateException.
+        // The last of those is made after commit() has flushed the response, so the client can be
+        // back here with the full body while the handler thread is still recording it -- read the
+        // record only once the handler has written it, rather than racing it.
+        TestAwait.until("The handler to record its guard results", () -> handler.guardResults.get() != null);
         assertEquals("TTT", handler.guardResults.get());
     }
 

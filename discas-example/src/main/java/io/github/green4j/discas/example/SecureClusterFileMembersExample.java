@@ -17,6 +17,7 @@ import io.github.green4j.discas.common.client.ReadConsistency;
 import io.github.green4j.discas.common.identity.ClientId;
 import io.github.green4j.discas.common.identity.ClusterId;
 import io.github.green4j.discas.common.identity.NodeId;
+import io.github.green4j.discas.common.transport.ListenSocket;
 import io.github.green4j.discas.common.transport.security.PeerSecurityProvider;
 import io.github.green4j.discas.common.transport.tls.CertRotationManager;
 import io.github.green4j.discas.common.transport.tls.FileTlsMaterialSource;
@@ -35,7 +36,6 @@ import io.github.green4j.discas.node.wal.FileWal;
 import io.github.green4j.discas.node.wal.StorageConfig;
 
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -79,10 +79,17 @@ public final class SecureClusterFileMembersExample {
         }
         System.out.println("issued cluster CA + per-node certs (SAN discas://" + CLUSTER + "/<node>)");
 
-        // Allocate peer ports and write the shared member list file
+        // Bind the peer sockets, then write the member list from the ports they actually hold.
+        // Each bound socket is handed to its node's bootstrap below, so no port is ever merely
+        // earmarked: choosing a port with a throwaway probe and binding it a moment later leaves a
+        // window in which anything -- including the kernel, handing an ephemeral port to some
+        // outbound connection -- can take it first.
+        final Map<NodeId, ListenSocket> peerSockets = new LinkedHashMap<>();
         final Map<NodeId, Integer> ports = new LinkedHashMap<>();
         for (final NodeId nodeId : NODE_IDS) {
-            ports.put(nodeId, freePort());
+            final ListenSocket peerSocket = ListenSocket.bind(new InetSocketAddress("127.0.0.1", 0));
+            peerSockets.put(nodeId, peerSocket);
+            ports.put(nodeId, peerSocket.port());
         }
         final Path membersFile = baseDir.resolve("members.conf");
         writeMembers(membersFile, ports);
@@ -119,9 +126,7 @@ public final class SecureClusterFileMembersExample {
 
             final DisCasNode node = DisCasNodeFactory.create(
                     new NodeConfig(nodeId, CLUSTER, NODE_IDS.size()),
-                    new TcpPeerBootstrap(
-                            new InetSocketAddress("127.0.0.1", ports.get(nodeId)),
-                            members, peerConfig, tls),
+                    new TcpPeerBootstrap(peerSockets.get(nodeId), members, peerConfig, tls),
                     wal);
 
             // Cert rotation applies on THIS node's event loop (created above): the
@@ -227,12 +232,6 @@ public final class SecureClusterFileMembersExample {
             }
         }
         throw new IllegalStateException("Cluster did not form within 60s", last);
-    }
-
-    private static int freePort() throws Exception {
-        try (ServerSocket serverSocket = new ServerSocket(0)) {
-            return serverSocket.getLocalPort();
-        }
     }
 
     private static ByteBuffer utf8(final String s) {
