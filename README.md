@@ -1,4 +1,4 @@
-# Discas: CASPaxos Key-Value Store
+# Discas: CASPaxos Durable Store
 
 `discas` (DIStributed CAS) is a tiny zero-dependency Java implementation of a CASPaxos-based replicated
 store. It is aimed to be a durable state for your distributed application when members **share state 
