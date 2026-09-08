@@ -1,8 +1,9 @@
 # Discas: CASPaxos Key-Value Store
 
-`discas` (DIStributed CAS) is a tiny zero-dependency Java implementation of a CASPaxos-based replicated key-value
-store. It holds the **shared state a set of microservices agrees on** -- locks, leadership,
-configuration, ownership -- and is deliberately **not a large platform-wide, multi-tenant service**.
+`discas` (DIStributed CAS) is a tiny zero-dependency Java implementation of a CASPaxos-based replicated
+store. It is aimed to be a durable state for your distributed application when members **share state 
+to agree on** -- locks, leadership, configuration, ownership -- and is deliberately 
+**not a large platform-wide, multi-tenant service**.
 
 It runs embedded in your own JVM or as a standalone node, with no runtime dependencies.
 
