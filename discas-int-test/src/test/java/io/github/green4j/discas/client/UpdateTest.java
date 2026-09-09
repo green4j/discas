@@ -195,7 +195,16 @@ class UpdateTest {
                 .get(TIMEOUT_MS, TimeUnit.MILLISECONDS);
         assertEquals(false, refused.swapped());
         assertEquals("first", string(refused.value()));
-        assertEquals(created.version(), refused.version());
+
+        // Not necessarily the version the winner was handed. A create that loses commits what it
+        // found first when too few acceptors held it for it to be chosen, which moves the version
+        // without moving the value. What is promised is that the version comes back usable, and the
+        // only real statement of that is that it fences the next write.
+        assertTrue(refused.version().compareTo(created.version()) >= 0,
+                "The loser was handed a version older than the winner's");
+        assertTrue(client.cas(key, refused.version(), "third")
+                        .get(TIMEOUT_MS, TimeUnit.MILLISECONDS).swapped(),
+                "The version handed to the loser did not fence the next write");
     }
 
     /**

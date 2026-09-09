@@ -46,11 +46,17 @@ public enum RoundFailure {
      * before proposing anything. <b>Nothing was accepted</b>: the check sits between prepare and
      * the Accept broadcast, so this is determinate in the same way {@link #BALLOT_NACK} is.
      * <p>
-     * This is what puts an end to "may still be applied". Without it the only bound on how long an
-     * abandoned proposal can keep trying to commit is the retry chain, whose length is
-     * {@code roundTimeout x (maxRoundRetries + 1)} plus backoff -- a number no caller is told and
-     * every attempt resets. With it, an indeterminate answer carries a stated horizon: the write
-     * may still apply within {@code proposalExpiry} of its start, and never afterwards.
+     * What it bounds is how long an operation keeps <em>starting attempts</em>. Without it that is
+     * the retry chain, {@code roundTimeout x (maxRoundRetries + 1)} plus backoff -- a number no
+     * caller is told and every attempt resets. With it, an operation that never got as far as
+     * proposing stops trying at a stated instant, which is what lets this code be determinate.
+     * <p>
+     * It is <em>not</em> a horizon on {@link #ACCEPT_TIMEOUT}, and no such horizon exists. Once an
+     * Accept has been broadcast, an acceptor holding it will hand it to the next prepare quorum
+     * that reaches it, whose round adopts and commits it -- arbitrarily later, and by a proposer
+     * that never heard of the original caller. Expiry stops this coordinator driving the proposal;
+     * it cannot un-accept what acceptors already took. An indeterminate answer is resolved by a
+     * version fence, never by waiting.
      * <p>
      * Not retryable, because the budget being retried against is the thing that ran out.
      */

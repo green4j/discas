@@ -109,7 +109,7 @@ carried on every failure response; applications should branch on them and never 
 | `NO_QUORUM_AT_COORDINATOR` | no | hidden failover | that coordinator cannot see a majority; another may |
 | `BALLOT_LOST` | no | surfaced | contention on the key. A property of the key, not of the node |
 | `PROPOSAL_EXPIRED` | **no** | surfaced | the write outlived `--proposal-expiry-ms` before Accept. Definitely not applied |
-| `UNAVAILABLE` | **unknown** | surfaced | the one indeterminate outcome. Bounded: it may still apply within `--proposal-expiry-ms` of when it was sent, and never afterwards |
+| `UNAVAILABLE` | **unknown** | surfaced | the one indeterminate outcome. Unbounded in time: an acceptor already holding the value hands it to the next prepare quorum that reaches it. Resolve it with a version fence, not by waiting |
 | `STORE_FULL` | no | surfaced | [4. Quorum -- capacity](04-quorum.md#capacity). Every replica gives the same answer |
 | `ACCESS_DENIED` | no | surfaced | [5. Access](05-access.md) |
 | `INVALID_ARGUMENT` | no | surfaced | key or value over the limits. Fails identically everywhere |

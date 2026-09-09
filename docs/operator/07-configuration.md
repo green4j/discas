@@ -191,8 +191,13 @@ them changed. Raise them only for genuinely pathological links.
 caps one attempt and each retry restarts it, so on its own it says nothing about how long a
 coordinator may keep trying to commit a write the client has already given up on. `proposalExpiry`
 is measured from the first attempt and is *not* reset by retries: past it, the coordinator abandons
-the operation. That is what turns an indeterminate answer into a bounded one -- *this write may still
-apply within `proposalExpiry` of when you sent it, and never afterwards*.
+the operation. That is what makes a write which never got as far as Accept answerable with a definite
+*it did not happen* (`PROPOSAL_EXPIRED`) instead of a shrug.
+
+It does **not** bound a write that did reach Accept. An acceptor holding a value keeps it, and the
+next round whose prepare quorum reaches that acceptor will adopt and commit it -- there is no instant
+after which an `UNAVAILABLE` answer becomes safe to read as "did not happen". Version-fenced writes,
+not the clock, are what resolve that.
 
 Whichever budget runs out first wins, so a `--proposal-expiry-ms` below
 `round-timeout x (round-max-retries + 1)` silently shortens the retry chain rather than bounding it.

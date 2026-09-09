@@ -21,8 +21,8 @@ package io.github.green4j.discas.common.client;
  * <em>Is the outcome known?</em> Every code is determinate -- the operation did not happen --
  * except {@link #UNAVAILABLE}, where the write may still be applied by a proposal already in
  * flight. That is the code a caller cannot resolve by re-reading, and the reason version-fenced
- * writes exist. {@link #PROPOSAL_EXPIRED} bounds it: past that horizon a proposal is no longer
- * driven, so an indeterminate answer has an end.
+ * writes exist. Nor can it be resolved by waiting: a value some acceptor already took is applied
+ * whenever a later round's prepare quorum next reaches that acceptor, which no timeout bounds.
  * <p>
  * Wire form is the one-byte {@link #code()}; unknown values decode to {@link #INTERNAL} so a
  * newer node adding a code cannot make an older client misread a failure as a success. The byte is
@@ -96,10 +96,10 @@ public enum ClientErrorCode {
      * anything was proposed. <b>Determinate: the write did not happen</b> -- the expiry is checked
      * between prepare and the Accept broadcast, so no acceptor ever saw the value.
      * <p>
-     * This code is the visible half of the bound on {@link #UNAVAILABLE}. An indeterminate answer
-     * only means something if "may still be applied" has an end; {@code proposalExpiry} is that
-     * end, and a caller that sees this code knows the deadline was reached with the write firmly on
-     * the "did not happen" side of it, rather than being left to guess.
+     * The value of the code is that it is reached at a stated instant. A caller that runs out of
+     * deadline is otherwise left guessing which side of "did not happen" it ended on; this says so.
+     * It is not a horizon on {@link #UNAVAILABLE} -- the two are alternatives, and an operation
+     * that got as far as proposing is answered {@link #UNAVAILABLE} however long it has been.
      * <p>
      * Not failed over automatically for unfenced writes. The expiry says the operation was slow,
      * which is not evidence about <em>this</em> coordinator, and another one would cost a full

@@ -47,6 +47,7 @@ public final class Version implements Comparable<Version> {
         return ballot.compareTo(other.ballot);
     }
 
+
     /**
      * A compact, stable string form of this version: {@code "<counter>:<nodeId>"}. The counter is
      * a decimal {@code long} (never contains {@code ':'}), so {@link #parse(String)} splits on the

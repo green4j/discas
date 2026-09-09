@@ -54,9 +54,12 @@ The one question a writer must be able to answer is **did it happen?** Every `Cl
 determinate -- it did not happen -- except **`UNAVAILABLE`**, which means the round reached Accept and
 may still be completed by a later proposer. That is the code a caller cannot resolve by re-reading.
 
-`proposalExpiry` is what bounds it: past that horizon the coordinator stops driving, so an
-indeterminate answer has an end rather than lasting forever, and `PROPOSAL_EXPIRED` says the deadline
-was reached with the write firmly on the "did not happen" side.
+Nor can it be resolved by waiting. `proposalExpiry` stops the *coordinator* driving the proposal, but
+a value some acceptor already accepted is not withdrawn by that: the next round whose prepare quorum
+reaches that acceptor adopts and commits it, however much later, and by a proposer that never heard
+of the original caller. `PROPOSAL_EXPIRED` is an alternative to `UNAVAILABLE`, not a bound on it --
+it says the deadline was reached with the write firmly on the "did not happen" side, before anything
+was proposed.
 
 For a fenced write none of this needs handling -- re-send until a definite answer or the deadline.
 For an unfenced `put`/`delete` there is no safe automatic recovery, and the caller is told so rather

@@ -63,8 +63,13 @@ final class Proposer {
 
         /**
          * False when the round carried an expected version that did not match the quorum-agreed
-         * accepted ballot. Nothing was proposed, and {@link #version()} carries the version that
-         * was found instead -- enough for the caller to recompute without a second round trip.
+         * accepted ballot. Nothing of the caller's was committed, and {@link #version()} carries the
+         * version in force instead -- enough to recompute without a second round trip.
+         * <p>
+         * The round may still have run an Accept: when the state it found was held by too few
+         * acceptors to be chosen, it commits that state unchanged before answering, so the version
+         * reported is one a quorum agrees on rather than one that can still evaporate. That is a
+         * write of what was already there, never of what the caller asked for.
          * <p>
          * Always true for an unfenced round: there was no comparison to lose.
          */
@@ -265,8 +270,9 @@ final class Proposer {
      * <p>
      * The comparison happens against the quorum-agreed state, after prepare and before anything
      * is proposed: that is the only point at which "the current version" is a fact rather than a
-     * guess. A mismatch completes the round without an Accept phase, so a stale attempt costs one
-     * prepare and changes nothing.
+     * guess. A mismatch never commits the caller's value. It usually costs one prepare and changes
+     * nothing at all; when the state it found is held by too few acceptors to be chosen, it commits
+     * that state unchanged first, so the version it reports cannot evaporate afterwards.
      * <p>
      * This is what makes a write safe to re-send after a coordinator stops answering.
      *
@@ -390,18 +396,21 @@ final class Proposer {
             final int attempt, final boolean allowReadOnlyShortCircuit,
             final Ballot expectedVersion) {
         return startRound(key, transform, attempt, allowReadOnlyShortCircuit, expectedVersion,
-                System.nanoTime() + proposalExpiryNanos);
+                System.nanoTime() + proposalExpiryNanos, false);
     }
 
     /**
-     * @param expiryNanos the operation's absolute deadline, inherited by every retry. Passing the
-     *                    previous attempt's value is what makes the budget belong to the operation
-     *                    rather than to each attempt separately.
+     * @param expiryNanos     the operation's absolute deadline, inherited by every retry. Passing
+     *                        the previous attempt's value is what makes the budget belong to the
+     *                        operation rather than to each attempt separately.
+     * @param mayHaveAccepted whether an earlier attempt already broadcast an Accept, inherited for
+     *                        the same reason and used the same way
      */
     private CompletableFuture<CasResult> startRound(
             final HashedBytes key, final Function<HashedBytes, HashedBytes> transform,
             final int attempt, final boolean allowReadOnlyShortCircuit,
-            final Ballot expectedVersion, final long expiryNanos) {
+            final Ballot expectedVersion, final long expiryNanos,
+            final boolean mayHaveAccepted) {
 
         final CompletableFuture<CasResult> future = new CompletableFuture<>();
 
@@ -418,7 +427,7 @@ final class Proposer {
             final Ballot ballot = nextBallot();
 
             round = new PendingRound(correlationId, key, ballot, transform, attempt, future,
-                    allowReadOnlyShortCircuit, expectedVersion, expiryNanos);
+                    allowReadOnlyShortCircuit, expectedVersion, expiryNanos, mayHaveAccepted);
             pending.put(correlationId, round);
 
             final PendingRound scheduledRound = round;
@@ -501,14 +510,27 @@ final class Proposer {
         // attempt -- an abandoned round that comes back after the register moved on, or a caller
         // retrying against a version that has since been overtaken -- ends here, having cost one
         // prepare and changed nothing.
+        //
+        // What it may not do is report a version a quorum has not confirmed. highestAccepted is the
+        // maximum over the promises, so it can come from a single acceptor holding what an
+        // interrupted round left behind: accepted, but not chosen. The next round whose prepare
+        // quorum misses that acceptor overwrites it and it is gone, never having been the register's
+        // value -- while this caller was already told it was the version that won. So an unconfirmed
+        // miss goes on to Accept and commits the state it found, unchanged, which is what makes the
+        // version reported below true.
         if (round.expectedVersion != null && !highestAccepted.equals(round.expectedVersion)) {
-            pending.remove(round.correlationId);
-            if (round.timerHandle != null) {
-                round.timerHandle.cancel();
+            if (confirmedByQuorum(round, highestAccepted)) {
+                pending.remove(round.correlationId);
+                if (round.timerHandle != null) {
+                    round.timerHandle.cancel();
+                }
+                round.future.complete(new CasResult(
+                        currentValue, currentTombstone, keyPreviouslyCommitted, highestAccepted,
+                        false));
+                return;
             }
-            round.future.complete(new CasResult(
-                    currentValue, currentTombstone, keyPreviouslyCommitted, highestAccepted,
-                    false));
+            round.fenceMatched = false;
+            proposeAccept(round, currentValue, currentTombstone);
             return;
         }
 
@@ -549,27 +571,44 @@ final class Proposer {
             // Skip read-only short-circuit when disabled (repairRound)
             // Repair rounds must always broadcast AcceptReq to push state
             // to laggard replicas
-            if (stateUnchanged && round.allowReadOnlyShortCircuit) {
-                int confirmedCount = 0;
-                for (final PeerMessage.PrepareResp promise : round.promises.values()) {
-                    if (promise.accepted().equals(highestAccepted)) {
-                        confirmedCount++;
-                    }
+            if (stateUnchanged && round.allowReadOnlyShortCircuit
+                    && confirmedByQuorum(round, highestAccepted)) {
+                pending.remove(round.correlationId);
+                if (round.timerHandle != null) {
+                    round.timerHandle.cancel();
                 }
-                if (confirmedCount >= quorumSize) {
-                    pending.remove(round.correlationId);
-                    if (round.timerHandle != null) {
-                        round.timerHandle.cancel();
-                    }
-                    round.future.complete(new CasResult(
-                            currentValue, currentTombstone, true, highestAccepted));
-                    return;
-                }
+                round.future.complete(new CasResult(
+                        currentValue, currentTombstone, true, highestAccepted));
+                return;
             }
         }
 
-        round.newValue = transformOutput;
-        round.newTombstone = (transformOutput == null);
+        proposeAccept(round, transformOutput, transformOutput == null);
+    }
+
+    /**
+     * Whether a quorum of this round's promises reports {@code accepted} as the ballot it holds.
+     * <p>
+     * That is the difference between a value that is <em>chosen</em> and one that is merely accepted
+     * somewhere. A quorum holding it means every future prepare quorum intersects a member that
+     * holds it, so nothing below it can win. A ballot only one acceptor reports is what an
+     * interrupted round left behind, and a later round that never sees it will overwrite it.
+     */
+    private boolean confirmedByQuorum(final PendingRound round, final Ballot accepted) {
+        int confirmed = 0;
+        for (final PeerMessage.PrepareResp promise : round.promises.values()) {
+            if (promise.accepted().equals(accepted)) {
+                confirmed++;
+            }
+        }
+        return confirmed >= quorumSize;
+    }
+
+    /** Phase 2: commit {@code value} at this round's ballot, answering once a quorum accepts it. */
+    private void proposeAccept(final PendingRound round, final HashedBytes value,
+                               final boolean tombstone) {
+        round.newValue = value;
+        round.newTombstone = tombstone;
 
         try {
             final PeerMessage.AcceptReq acceptRequest = new PeerMessage.AcceptReq(
@@ -595,6 +634,12 @@ final class Proposer {
                 }
             }
 
+            // Every path that reaches here either left the value on the self acceptor or is about
+            // to put it on the wire, and neither can be recalled. The self-NACK above returns
+            // instead, which is why the flag is not set before the accept: a NACK wrote nothing and
+            // broadcast nothing, so that round really is provably un-proposed.
+            round.mayHaveAccepted = true;
+
             broadcast(acceptRequest);
         } catch (final Exception e) {
             pending.remove(round.correlationId);
@@ -611,7 +656,8 @@ final class Proposer {
             round.timerHandle.cancel();
         }
         observer.roundCommitted(round.key, round.ballot);
-        round.future.complete(new CasResult(round.newValue, round.newTombstone, true, round.ballot));
+        round.future.complete(new CasResult(round.newValue, round.newTombstone, true, round.ballot,
+                round.fenceMatched));
     }
 
     /**
@@ -677,7 +723,7 @@ final class Proposer {
                 try {
                     startRound(round.key, round.transform, round.attempt + 1,
                             round.allowReadOnlyShortCircuit, round.expectedVersion,
-                            round.expiryNanos)
+                            round.expiryNanos, round.mayHaveAccepted)
                             .whenCompleteAsync((value, exception) -> {
                                 pendingRetries.removeIf(pr -> pr.future == round.future);
                                 if (exception != null) {
@@ -699,9 +745,35 @@ final class Proposer {
         }
     }
 
-    /** Report a failure to the caller, no further attempt being made. */
+    /**
+     * Report a failure to the caller, no further attempt being made.
+     * <p>
+     * Determinacy belongs to the operation, not to the attempt that happened to end it.
+     * {@link RoundFailure#PROPOSAL_EXPIRED} and {@link RoundFailure#INSUFFICIENT_RESPONDERS} both
+     * mean "nothing was proposed", and both are decided from what <em>this</em> attempt got to do.
+     * An attempt earlier in the chain may have broadcast an Accept that a minority took, and no
+     * clock erases accepted Paxos state: a later round's prepare quorum can still adopt it. So once
+     * anything has been proposed, the only honest answer left is the indeterminate one, whatever
+     * the attempt that finally ran out of budget happened to hit.
+     * <p>
+     * This costs something, and knowingly. {@code INSUFFICIENT_RESPONDERS} answers a second,
+     * unrelated question -- <em>is another coordinator worth trying at once?</em> -- and that answer
+     * is lost when it is reported as indeterminate instead, so a client behind an asymmetric
+     * partition waits out a retry it could have skipped. The trade is not close: a wrong "the write
+     * did not happen" corrupts what the caller does next, while a missing failover hint only makes
+     * it slower. Carrying both would need a client code for indeterminate-and-move-on, which the
+     * protocol does not have.
+     */
     private void giveUp(final PendingRound round, final RoundFailure failure, final String reason) {
         observer.roundFailed(round.key, reason);
+        if (round.mayHaveAccepted && failure != RoundFailure.ACCEPT_TIMEOUT) {
+            round.future.completeExceptionally(new RoundFailedException(
+                    RoundFailure.ACCEPT_TIMEOUT,
+                    "CAS failed after retries: " + reason
+                            + " (an earlier attempt had already broadcast an Accept, so this is "
+                            + "not determinate)"));
+            return;
+        }
         round.future.completeExceptionally(new RoundFailedException(failure,
                 (failure.retryable() ? "CAS failed after retries: " : "CAS failed: ") + reason));
     }
@@ -802,13 +874,28 @@ final class Proposer {
         boolean newTombstone;
         EventLoop.TimerHandle timerHandle;
 
+        /**
+         * False once the fence has been found not to hold, so the Accept below writes the state back
+         * unchanged rather than committing anything of the caller's.
+         */
+        boolean fenceMatched = true;
+
+        /**
+         * Whether any attempt of this operation has put an Accept where an acceptor could take it.
+         * Inherited by every retry, because what a previous attempt proposed does not become
+         * un-proposed when this one starts. What it is for is in {@code giveUp}.
+         */
+        boolean mayHaveAccepted;
+
         PendingRound(final long correlationId, final HashedBytes key, final Ballot ballot,
                      final Function<HashedBytes, HashedBytes> transform, final int attempt,
                      final CompletableFuture<CasResult> future,
                      final boolean allowReadOnlyShortCircuit,
                      final Ballot expectedVersion,
-                     final long expiryNanos) {
+                     final long expiryNanos,
+                     final boolean mayHaveAccepted) {
             this.expiryNanos = expiryNanos;
+            this.mayHaveAccepted = mayHaveAccepted;
             this.correlationId = correlationId;
             this.key = key;
             this.ballot = ballot;

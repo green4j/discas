@@ -541,9 +541,10 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      *
      * <p>Reach for this one when the version is something the caller already holds or already
      * knows -- from the {@link #put} that wrote it, from a {@link #watch}, or from
-     * {@link Version#INITIAL}, which means "never written" and makes this a create-if-absent (see
-     * {@link #putIfAbsent}). Losing there is final: the key exists, and reading again will not
-     * change that. When instead the version has to be read first because the current state decides
+     * {@link Version#INITIAL}, which means "has no committed value" and makes this a
+     * create-if-absent (see {@link #putIfAbsent}). Losing there is final in the sense that matters:
+     * the key exists, and reading again will not change that. When instead the version has to be
+     * read first because the current state decides
      * what to write, the loop belongs to {@link #update} rather than to the caller.
      *
      * <p>A request is sent to one coordinator per attempt, and a coordinator the client has
@@ -731,9 +732,14 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
     }
 
     /**
-     * Writes {@code value} at {@code key} only if the key has never been written --
+     * Writes {@code value} at {@code key} only if the key has no committed value --
      * {@link #cas(ByteBuffer, Version, ByteBuffer)} against {@link Version#INITIAL}, under the
      * name that says what it is for.
+     * <p>
+     * "Absent" is a state, not a history. A key that was written, deleted, and whose tombstone the
+     * cluster has since collected is back at {@link Version#INITIAL} and can be created again --
+     * the store keeps no memory of a key it has agreed to forget. What this does <em>not</em> do is
+     * lose a race and then win it: only a delete puts the key back within reach.
      * <p>
      * Not a shorthand for {@link #update}: losing here is final, not a reason to read again. The
      * key exists, and no amount of retrying will make it not exist. The {@link CasResult} carries

@@ -55,66 +55,67 @@ public final class HistoryRecorder {
     public void put(final HashedBytes key, final HashedBytes value) {
         calls.incrementAndGet();
         final long invoke = System.nanoTime();
+        Version committed = null;
         OpRecord.Status status;
         try {
-            client.put(key.toBuffer(), value.toBuffer()).get(timeoutMs, TimeUnit.MILLISECONDS);
+            committed = client.put(key.toBuffer(), value.toBuffer())
+                    .get(timeoutMs, TimeUnit.MILLISECONDS);
             status = OpRecord.Status.OK;
         } catch (final Exception e) {
             status = OpRecord.Status.UNKNOWN;
         }
-        history.add(OpRecord.put(key, value, status, invoke, System.nanoTime()));
+        history.add(OpRecord.put(key, value, committed, status, invoke, System.nanoTime()));
     }
 
     public void delete(final HashedBytes key) {
         calls.incrementAndGet();
         final long invoke = System.nanoTime();
+        Version committed = null;
         OpRecord.Status status;
         try {
-            client.delete(key.toBuffer()).get(timeoutMs, TimeUnit.MILLISECONDS);
+            committed = client.delete(key.toBuffer()).get(timeoutMs, TimeUnit.MILLISECONDS);
             status = OpRecord.Status.OK;
         } catch (final Exception e) {
             status = OpRecord.Status.UNKNOWN;
         }
-        history.add(OpRecord.delete(key, status, invoke, System.nanoTime()));
+        history.add(OpRecord.delete(key, committed, status, invoke, System.nanoTime()));
     }
 
     public HashedBytes get(final HashedBytes key) {
         calls.incrementAndGet();
         final long invoke = System.nanoTime();
         HashedBytes observed = null;
+        Version observedAt = null;
         OpRecord.Status status;
         try {
-            final ByteBuffer result = client.get(key.toBuffer())
-                    .get(timeoutMs, TimeUnit.MILLISECONDS).value();
-            observed = result == null ? null : new HashedBytes(result);
+            final GetResult result = client.get(key.toBuffer())
+                    .get(timeoutMs, TimeUnit.MILLISECONDS);
+            final ByteBuffer value = result.value();
+            observed = value == null ? null : new HashedBytes(value);
+            observedAt = result.version();
             status = OpRecord.Status.OK;
         } catch (final Exception e) {
             status = OpRecord.Status.UNKNOWN;
         }
-        history.add(OpRecord.get(key, observed, status, invoke, System.nanoTime()));
+        history.add(OpRecord.get(key, observed, observedAt, status, invoke, System.nanoTime()));
         return observed;
     }
 
     /**
      * A compare-and-set with {@code expected} as its intended precondition, performed the only way
-     * the store now offers: read the version, then write fenced on it.
+     * the store offers: read the version, then write fenced on it.
      *
-     * <h4>Why this still records against a value-compared register model</h4>
-     * The checker's sequential spec is {@code cas(expected, desired)} over values, and a
-     * version-fenced write is not that operation. Recording it naively would let the checker report
-     * violations that never happened, so each outcome is recorded as the constraint it actually
-     * imposes:
+     * <h4>What each outcome constrains</h4>
      * <ul>
-     *   <li><b>Swapped.</b> The register was at the fenced version at the linearization point, so it
-     *       held the value the read observed -- a value-compared CAS with that same expectation
-     *       would also have swapped. Recorded as {@code CAS(expected=observed, desired)}.</li>
-     *   <li><b>Lost the compare.</b> Nothing was written, and the refusal carries the value that
-     *       won. That is an observation and not a mutation, so it is recorded as a {@code GET} of
-     *       that value. Recording it as a failed value-CAS would be <em>unsound</em>: the version
-     *       can differ while the value is equal (a rewrite of identical bytes), and the model would
-     *       then insist the swap should have happened.</li>
+     *   <li><b>Swapped.</b> Recorded as the fenced CAS it was. The fence is what the checker
+     *       replays, so a swap that could only have happened at one version is held to it.</li>
+     *   <li><b>Lost the compare.</b> Nothing of the caller's was written, and the refusal carries
+     *       the value and version in force. That is an observation, so it is recorded as a
+     *       {@code GET} of them. Recording it as a failed CAS would say less: the coordinator may
+     *       have committed the state it found before answering, so the version that comes back is
+     *       not necessarily the one the swap lost to.</li>
      *   <li><b>Unknown.</b> Recorded as a CAS with {@code UNKNOWN}, which the checker explores both
-     *       ways -- took effect and did not.</li>
+     *       ways -- took effect and did not -- but only where the fence could have held.</li>
      * </ul>
      * The intervening read is itself recorded, so its constraint is not lost either.
      */
@@ -142,15 +143,15 @@ public final class HistoryRecorder {
             final HashedBytes observed = result.value() == null
                     ? null : new HashedBytes(result.value());
             if (result.swapped()) {
-                history.add(OpRecord.cas(key, expected, desired, true, observed,
-                        OpRecord.Status.OK, invoke, System.nanoTime()));
+                history.add(OpRecord.cas(key, expected, desired, fence, true, observed,
+                        result.version(), OpRecord.Status.OK, invoke, System.nanoTime()));
             } else {
-                history.add(OpRecord.get(key, observed, OpRecord.Status.OK,
+                history.add(OpRecord.get(key, observed, result.version(), OpRecord.Status.OK,
                         invoke, System.nanoTime()));
             }
         } catch (final Exception e) {
-            history.add(OpRecord.cas(key, expected, desired, false, null,
-                    OpRecord.Status.UNKNOWN, invoke, System.nanoTime()));
+            history.add(OpRecord.cas(key, expected, desired, fence, false, null,
+                    null, OpRecord.Status.UNKNOWN, invoke, System.nanoTime()));
         }
     }
 
@@ -173,7 +174,7 @@ public final class HistoryRecorder {
         } catch (final Exception e) {
             status = OpRecord.Status.UNKNOWN;
         }
-        history.add(OpRecord.get(key, observed, status, invoke, System.nanoTime()));
+        history.add(OpRecord.get(key, observed, lastVersionRead, status, invoke, System.nanoTime()));
         return observed;
     }
 

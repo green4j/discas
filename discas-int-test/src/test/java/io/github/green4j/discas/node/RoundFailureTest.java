@@ -352,6 +352,33 @@ class RoundFailureTest {
                 "An expired round must not propose -- otherwise the write is not provably absent");
     }
 
+    @Test
+    @DisplayName("A retry that reaches no quorum cannot unsay what an earlier attempt proposed")
+    void indeterminacyOutlivesTheAttemptThatCausedIt() throws Exception {
+        final LocalStore store = new LocalStore(new InMemoryWal());
+        final PrepareOnlyTransport transport = new PrepareOnlyTransport(3, List.of(nid(2), nid(3)));
+        // The peers leave once the first attempt's accept is on the wire, so the retry cannot even
+        // collect promises. It therefore ends on INSUFFICIENT_RESPONDERS, which reads "nothing was
+        // proposed" -- true of that attempt, and the whole point here, false of the operation.
+        transport.goSilentAfterAccept = true;
+        final Proposer proposer = proposer(transport, new Acceptor(nid(1), store), store, 3);
+        transport.register(message -> loop.execute(() -> {
+            if (message instanceof PeerMessage.PrepareResp) {
+                proposer.onPrepareResp((PeerMessage.PrepareResp) message);
+            } else if (message instanceof PeerMessage.AcceptResp) {
+                proposer.onAcceptResp((PeerMessage.AcceptResp) message);
+            }
+        }));
+
+        final RoundFailedException failure = failureOf(
+                proposer.write(TestBytes.hashed("k"), current -> TestBytes.hashed("v")));
+
+        // The first attempt's value may be sitting on an acceptor, and a later round's prepare
+        // quorum can adopt it whenever. No determinate code is available any more.
+        assertEquals(RoundFailure.ACCEPT_TIMEOUT, failure.failure(),
+                "The attempt that ended the chain was allowed to speak for the whole operation");
+    }
+
     /**
      * Promises that arrive late: prepare reaches quorum, but only after the operation's budget has
      * run out. Isolates the expiry check in {@code advanceToAccept} from the per-round timer.
@@ -425,6 +452,8 @@ class RoundFailureTest {
         private Consumer<PeerMessage> handler;
         /** Flipped by tests that need the peers to go away and come back. */
         private volatile boolean answering = true;
+        /** Set by tests that need the peers to leave once an accept is already on the wire. */
+        private volatile boolean goSilentAfterAccept;
 
         private PrepareOnlyTransport(final int clusterSize, final List<NodeId> peers) {
             this.clusterSize = clusterSize;
@@ -433,8 +462,14 @@ class RoundFailureTest {
 
         @Override
         public void send(final NodeId targetNodeId, final PeerMessage message) {
+            if (message instanceof PeerMessage.AcceptReq) {
+                if (goSilentAfterAccept) {
+                    answering = false;
+                }
+                return; // never answered -- that is the stall being simulated
+            }
             if (!answering || !(message instanceof PeerMessage.PrepareReq)) {
-                return; // AcceptReq is dropped -- that is the stall being simulated
+                return;
             }
             final PeerMessage.PrepareReq request = (PeerMessage.PrepareReq) message;
             handler.accept(new PeerMessage.PrepareResp(

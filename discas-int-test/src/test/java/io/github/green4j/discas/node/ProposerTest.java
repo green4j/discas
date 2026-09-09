@@ -49,6 +49,7 @@ class ProposerTest {
     private InMemoryWal wal1, wal2, wal3;
     private LocalStore store1, store2, store3;
     private Acceptor acceptor1, acceptor2, acceptor3;
+    private InProcessPeerTransport transport3;
     private Proposer proposer1;
 
     @BeforeEach
@@ -79,6 +80,7 @@ class ProposerTest {
                 InMemoryMembers.ofNodes(ALL_NODES));
         final InProcessPeerTransport t3 = new InProcessPeerTransport(nid(3), ALL_NODES.size(), loop3,
                 InMemoryMembers.ofNodes(ALL_NODES));
+        transport3 = t3;
 
         // Wire acceptors to receive messages on their loops
         t2.register(msg -> handleOnAcceptor(2, acceptor2, t2, msg));
@@ -124,6 +126,11 @@ class ProposerTest {
 
     private <T> T get(final CompletableFuture<T> f) throws Exception {
         return f.get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    /** Take a node off the air: its endpoint is still there, but nothing answers on it. */
+    private static void silence(final InProcessPeerTransport transport) {
+        transport.register(message -> { });
     }
 
     @Test
@@ -313,5 +320,41 @@ class ProposerTest {
                 proposer1.write(TestBytes.hashed("missing"), Function.identity()));
 
         assertFalse(result.keyExists());
+    }
+
+    /**
+     * A fenced CAS that loses may not name a version only one acceptor holds.
+     * <p>
+     * The register sits at the committed ballot; a round that died mid-Accept then leaves a higher
+     * one on node 2 alone. A prepare quorum containing node 2 sees that ballot as the highest and
+     * the fence misses against it -- yet nothing has chosen it, and the next round whose quorum
+     * misses node 2 would overwrite it, leaving a caller holding a version that was never the
+     * register's. So the round commits what it found before it reports it.
+     */
+    @Test
+    @DisplayName("A fenced CAS that loses reports a version a quorum agrees on")
+    void lostFenceDoesNotReportAnUnchosenVersion() throws Exception {
+        final HashedBytes k = TestBytes.hashed("k");
+        final HashedBytes v1 = TestBytes.hashed("v1");
+        final HashedBytes orphan = TestBytes.hashed("orphan");
+
+        final Ballot committed = get(proposer1.write(k, current -> v1)).version();
+
+        // Node 3 goes quiet, so the prepare below has to build its quorum out of node 2 -- which is
+        // where the interrupted round's accept goes. Its ballot sits between this proposer's last
+        // and its next, so the prepare still clears it.
+        silence(transport3);
+        final Ballot orphanBallot = new Ballot(committed.counter(), nid(2));
+        acceptor2.handleAccept(
+                new PeerMessage.AcceptReq(nid(2), 4242L, k, orphanBallot, orphan, false));
+
+        final Proposer.CasResult refused = get(proposer1.cas(k, committed, current -> v1));
+
+        assertFalse(refused.fenceMatched(), "The register had moved past the fenced version");
+        assertEquals(orphan, refused.value(), "The value in force was not the one reported");
+        assertTrue(refused.version().compareTo(orphanBallot) > 0,
+                "A version only one acceptor held was handed back as the one in force");
+        assertEquals(refused.version(), store1.get(k).accepted,
+                "The state reported was never committed");
     }
 }
