@@ -130,8 +130,9 @@ Two independent axes -- *which* suites run, and *how hard* they run. Both are co
 
 CI is two workflows, described in [.github/ACTIONS.md](../../.github/ACTIONS.md). `build.yml` runs
 `./gradlew clean build` across a JDK 11/17/21/25 matrix and `./gradlew verify` once on the baseline;
-`release.yml` publishes to Sonatype. The definition of "green" stays in the build rather than being
-restated as workflow steps, so a workflow only ever names a Gradle task.
+`release.yml` runs `verify` and publishes to Sonatype in the same invocation, so what is uploaded
+is what passed. The definition of "green" stays in the build rather than being restated as workflow
+steps, so a workflow only ever names a Gradle task.
 
 ## Debugging
 

@@ -23,16 +23,11 @@ permissions:
   contents: read
 
 jobs:
-  # Nothing is published from a tree that has not passed `./gradlew verify`. The same reusable
-  # workflow Check and Verify calls, run here against the exact ref being released.
-  verify:
-    uses: ./.github/workflows/verify.yml
-
   publish:
     name: Publish to Sonatype
-    needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # `verify` runs inside this job: the full suite, then the upload.
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -99,9 +94,11 @@ jobs:
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
           SIGNING_GPG_SECRET_KEY: ${{ secrets.SIGNING_GPG_SECRET_KEY }}
           SIGNING_GPG_PASSWORD: ${{ secrets.SIGNING_GPG_PASSWORD }}
+        # `verify` ahead of `publish`, in one invocation: what is uploaded is what has just passed
+        # the whole suite, rather than a rebuild of it from a second checkout.
         run: |
           if [[ "${PUBLISH_MODE}" == "snapshot" ]]; then
-            ./gradlew --no-daemon --stacktrace clean publish
+            ./gradlew --no-daemon --stacktrace clean verify publish
           else
-            ./gradlew --no-daemon --stacktrace clean publish uploadArtifactsToSonatypeCentralPortal
+            ./gradlew --no-daemon --stacktrace clean verify publish uploadArtifactsToSonatypeCentralPortal
           fi
