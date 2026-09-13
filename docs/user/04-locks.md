@@ -44,9 +44,12 @@ future:
 | `HELD_BY_SELF` | a live lease already stands under *your* owner id -- see [below](#when-the-outcome-is-unknown) |
 | `NOT_LOCK_RECORD` | that key holds something that is not a lock -- you are colliding with other data |
 | `TIMED_OUT` | only from `lock(...)`: your wait budget ran out while somebody else kept it |
+| `NOT_HELD` | you lost the write to somebody who left the key free -- nobody holds it, so try again |
 
 A result carries the lock or the record that stood in its way, never both: on success the `Lock` is
-the whole answer, and `observed()` is what a refusal has instead of one. A `lock(...)` with a zero
+the whole answer, and `observed()` is what a refusal has instead of one. `NOT_HELD` has neither: a
+key nobody holds has no holder to name, which is also why an acquire never reports a released,
+lapsed or deleted key as somebody else's. A `lock(...)` with a zero
 wait is `tryLock` and is routed to it, so a caller counting down a budget to nothing still gets the
 precise refusal rather than a `TIMED_OUT` that says less.
 

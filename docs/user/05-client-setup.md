@@ -47,7 +47,7 @@ DisCasClient client = DisCasClientFactory.create(clientId, bootstrap, config);
 | `scanTimeout` | 10 s | a scan's fan-out |
 | `peerRetryMinBackoff` / `peerRetryMaxBackoff` | 50 ms / 2 s | how long a failing coordinator is skipped |
 | `lockMinBackoff` / `lockMaxBackoff` | 20 ms / 80 ms | retry pacing inside `lock(...)` |
-| `watchMinBackoff` / `watchMaxBackoff` | 200 ms / 1 s | re-poll pacing inside `watch(...)` |
+| `watchPollPeriod` | 1 s | shortest gap between polls inside `watch(...)`, counted from the answer; the gap taken is spread up to five times it |
 | `shutdownAwaitTimeout` | 5 s | how long `close()` waits for the loop |
 
 `build()` rejects a `requestDeadline` at or below `perAttemptTimeout` -- that combination cuts the

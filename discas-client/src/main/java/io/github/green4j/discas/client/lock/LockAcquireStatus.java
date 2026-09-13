@@ -41,8 +41,13 @@ public enum LockAcquireStatus {
     /** The caller's wait budget ran out while the lock stayed held by someone else. */
     TIMED_OUT,
     /**
-     * Only from {@code recoverLock}: nobody holds the key, so there was nothing of the caller's to
-     * recover. The acquire being recovered did not land, and may be issued again.
+     * Nobody holds the key, and nothing was written.
+     * <p>
+     * From {@code recoverLock} it means the acquire being recovered did not land, and may be
+     * issued again. From an acquire it means the fenced write lost to somebody who left no live
+     * lease behind -- a release, a lapse, a delete -- so the key is free again and the attempt is
+     * simply worth repeating. Either way there is no {@link LockAcquireResult#observed() observed}
+     * record: a key nobody holds has no holder to name.
      */
     NOT_HELD
 }

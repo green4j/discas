@@ -259,6 +259,10 @@ public final class UserDocSnippets {
 
         client.watch(utf8("config/timeout"), cursor, Duration.ofSeconds(30),
                 ReadConsistency.SERIALIZABLE);
+
+        client.watch(utf8("jobs/nightly/state"), cursor, Duration.ofMinutes(5),
+                ReadConsistency.LINEARIZABLE,
+                Duration.ofSeconds(10));
     }
 
     // ---- 04: locks -------------------------------------------------------------------------------

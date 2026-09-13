@@ -52,7 +52,10 @@ public final class LockAcquireResult {
         return new LockAcquireResult(LockAcquireStatus.HELD_BY_SELF, null, observed);
     }
 
-    /** Nothing holds the key, so a recovery found nothing of the caller's to hand back. */
+    /**
+     * Nothing holds the key: a recovery found nothing of the caller's to hand back, or an
+     * acquire lost its fenced write to somebody who left the key free.
+     */
     public static LockAcquireResult notHeld() {
         return new LockAcquireResult(LockAcquireStatus.NOT_HELD, null, null);
     }
@@ -86,7 +89,12 @@ public final class LockAcquireResult {
      * The record that stood in the way, and {@code null} when none did -- on
      * {@link LockAcquireStatus#ACQUIRED}, where the lock itself is the answer, and on
      * {@link LockAcquireStatus#NOT_HELD} and {@link LockAcquireStatus#NOT_LOCK_RECORD}, where
-     * there was no lock record to report.
+     * there was no lock record to report. {@link LockAcquireStatus#TIMED_OUT} carries whatever
+     * the last look found, which is normally the holder that outlasted the budget but is
+     * {@code null} if the key happened to be free at that instant.
+     * <p>
+     * {@link LockAcquireStatus#HELD_BY_OTHER} and {@link LockAcquireStatus#HELD_BY_SELF} always
+     * carry one: they are said only of a live lease, and a live lease is a record.
      * <p>
      * Named as in {@link LockWriteResult#observed()}, and for the same reason: a refused operation
      * says what it saw, so the caller learns who it lost to without a second round trip.

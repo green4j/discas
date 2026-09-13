@@ -81,6 +81,17 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
     /** Largest value the cluster accepts; a longer value is rejected before any round is started. */
     public static final int MAX_VALUE_BYTES = KvLimits.MAX_VALUE_BYTES;
 
+    /**
+     * The shortest re-poll period {@link #watch(ByteBuffer, Version, Duration, ReadConsistency, Duration)}
+     * accepts. A watch is a standing query against every node, so the floor is the cluster's and
+     * not the caller's to lower; {@link DisCasClientConfig#watchPollPeriod()} is where a whole
+     * client deliberately goes below it.
+     */
+    public static final Duration MIN_WATCH_POLL_PERIOD = Duration.ofMillis(500);
+
+    /** How far above its period a poll gap may be drawn, so watches do not stay in step. */
+    private static final int WATCH_POLL_SPREAD = 5;
+
     private static final SecureRandom LOCK_TOKEN_RNG = new SecureRandom();
 
     private final ClientId clientId;
@@ -139,8 +150,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
     private final Duration shutdownAwaitTimeout;
     private final Duration lockMinBackoff;
     private final Duration lockMaxBackoff;
-    private final Duration watchMinBackoff;
-    private final Duration watchMaxBackoff;
+    private final Duration watchPollPeriod;
 
     private static final int LOCK_TOKEN_BYTES = 16;
 
@@ -245,8 +255,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         this.shutdownAwaitTimeout = cfg.shutdownAwaitTimeout();
         this.lockMinBackoff = cfg.lockMinBackoff();
         this.lockMaxBackoff = cfg.lockMaxBackoff();
-        this.watchMinBackoff = cfg.watchMinBackoff();
-        this.watchMaxBackoff = cfg.watchMaxBackoff();
+        this.watchPollPeriod = cfg.watchPollPeriod();
         this.clientId = clientId;
         this.transport = transport;
         this.loop = loop;
@@ -328,6 +337,17 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                                                 final Duration maxWait,
                                                 final ReadConsistency consistency) {
         return watch(encodeStringUtf8(key), sinceVersion, maxWait, consistency);
+    }
+
+    /**
+     * UTF-8 string-key form of
+     * {@link #watch(ByteBuffer, Version, Duration, ReadConsistency, Duration)}.
+     */
+    public CompletableFuture<WatchResult> watch(final String key, final Version sinceVersion,
+                                                final Duration maxWait,
+                                                final ReadConsistency consistency,
+                                                final Duration pollPeriod) {
+        return watch(encodeStringUtf8(key), sinceVersion, maxWait, consistency, pollPeriod);
     }
 
     /** UTF-8 string-key form of {@link #put(ByteBuffer, ByteBuffer)}. */
@@ -457,10 +477,11 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      *
      * <p>Semantics are coalescing (latest-value): under rapid churn intermediate values may be
      * skipped -- discas is a CASPaxos register store and keeps no history to replay. Implemented as
-     * a client-side poll with gentle backoff (the same shape as blocking lock acquire), each poll a
-     * {@link #get} at {@code consistency} -- {@code LINEARIZABLE} in the default
-     * {@link #watch(ByteBuffer, Version, Duration)}. Feed the returned
-     * {@link WatchResult#version()} back in to continue watching.
+     * a client-side poll, each poll a {@link #get} at {@code consistency} -- {@code LINEARIZABLE}
+     * in the default {@link #watch(ByteBuffer, Version, Duration)}. Polls are paced at
+     * {@link DisCasClientConfig#watchPollPeriod()}; the overload
+     * {@link #watch(ByteBuffer, Version, Duration, ReadConsistency, Duration)} paces one watch
+     * itself. Feed the returned {@link WatchResult#version()} back in to continue watching.
      *
      * <p><b>A {@code SERIALIZABLE} watch rotates over the membership</b>, because a poll answered
      * from one member's local state says nothing about the cluster and asking that member again
@@ -484,6 +505,47 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
     public CompletableFuture<WatchResult> watch(final ByteBuffer key, final Version sinceVersion,
                                                 final Duration maxWait,
                                                 final ReadConsistency consistency) {
+        // Not through the overload below, deliberately: its floor is on what a call site asks for,
+        // and the configured period is the one place a whole client is allowed under it.
+        return watchWith(key, sinceVersion, maxWait, consistency, watchPollPeriod);
+    }
+
+    /**
+     * As {@link #watch(ByteBuffer, Version, Duration, ReadConsistency)}, pacing this watch's polls
+     * itself instead of at {@link DisCasClientConfig#watchPollPeriod()}.
+     *
+     * <p>{@code pollPeriod} is the <b>shortest</b> gap between one poll and the next, and it is
+     * counted from the moment a poll answered rather than from when it was sent -- a round that
+     * took a second is not followed immediately by another. The gap actually taken is drawn
+     * from {@code [pollPeriod, pollPeriod * 5]}, so watches started together drift apart rather
+     * than polling the cluster in step, and it is shortened only to avoid overrunning
+     * {@code maxWait}.
+     *
+     * <p>Below {@link #MIN_WATCH_POLL_PERIOD} this throws rather than quietly rounding up: a
+     * caller that asked for 100ms and got 500ms would go on believing it polls ten times a second.
+     * A whole client that means it sets {@link DisCasClientConfig.Builder#watchPollPeriod}, which
+     * is one deliberate decision rather than one per call site.
+     *
+     * @param pollPeriod the shortest gap between polls, at least {@link #MIN_WATCH_POLL_PERIOD}
+     */
+    public CompletableFuture<WatchResult> watch(final ByteBuffer key, final Version sinceVersion,
+                                                final Duration maxWait,
+                                                final ReadConsistency consistency,
+                                                final Duration pollPeriod) {
+        if (pollPeriod == null || pollPeriod.compareTo(MIN_WATCH_POLL_PERIOD) < 0) {
+            final CompletableFuture<WatchResult> failed = new CompletableFuture<>();
+            failed.completeExceptionally(new IllegalArgumentException(
+                    "pollPeriod must be >= " + MIN_WATCH_POLL_PERIOD.toMillis() + "ms"));
+            return failed;
+        }
+        return watchWith(key, sinceVersion, maxWait, consistency, pollPeriod);
+    }
+
+    private CompletableFuture<WatchResult> watchWith(final ByteBuffer key,
+                                                     final Version sinceVersion,
+                                                     final Duration maxWait,
+                                                     final ReadConsistency consistency,
+                                                     final Duration pollPeriod) {
         checkKeySize(key);
         if (maxWait == null || maxWait.isNegative()) {
             final CompletableFuture<WatchResult> failed = new CompletableFuture<>();
@@ -492,7 +554,8 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         }
         final Version since = sinceVersion == null ? Version.INITIAL : sinceVersion;
         final ReadConsistency level = consistency == null ? ReadConsistency.LINEARIZABLE : consistency;
-        return watchAttempt(key.duplicate(), since, deadlineNanosFromNow(maxWait), level, 0, null);
+        return watchAttempt(key.duplicate(), since, deadlineNanosFromNow(maxWait), level,
+                pollPeriod, 0, null);
     }
 
     /**
@@ -1188,12 +1251,19 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                     if (info.status() == LockInfoStatus.NOT_LOCK_RECORD) {
                         return LockAcquireResult.notLockRecord();
                     }
-                    final LockInfo winner = info.info();
-                    if (winner != null && ownerId.equals(winner.ownerId())
-                            && info.status() == LockInfoStatus.LOCKED) {
-                        return LockAcquireResult.heldBySelf(winner);
+                    if (info.status() != LockInfoStatus.LOCKED) {
+                        // Judged the same way the read that opened this attempt judged the key:
+                        // live is held, anything else is free. The write that won left no live
+                        // lease -- a release, a lapse, a delete -- so there is nobody to report as
+                        // the holder, and for a deleted key there is not even a record to name one
+                        // from. Saying somebody holds it would be false and would send a waiter
+                        // into a wait with nothing to wait for.
+                        return LockAcquireResult.notHeld();
                     }
-                    return LockAcquireResult.heldByOther(winner);
+                    final LockInfo winner = info.info();
+                    return ownerId.equals(winner.ownerId())
+                            ? LockAcquireResult.heldBySelf(winner)
+                            : LockAcquireResult.heldByOther(winner);
                 });
             }, asyncCallbacks);
         }, asyncCallbacks);
@@ -1505,7 +1575,9 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         return tryLock(key.duplicate(), leaseTtl, ownerId).thenComposeAsync(result -> {
             // HELD_BY_SELF ends the wait for the same reason the other two do: no further attempt
             // can change it. The lease in the way is this caller's own, and it will not lapse
-            // while the caller is the one meant to be renewing it.
+            // while the caller is the one meant to be renewing it. NOT_HELD is not among them and
+            // deliberately: it says the key is free, which is the one refusal another attempt is
+            // most likely to turn into an acquire.
             if (result.status() == LockAcquireStatus.ACQUIRED
                     || result.status() == LockAcquireStatus.NOT_LOCK_RECORD
                     || result.status() == LockAcquireStatus.HELD_BY_SELF) {
@@ -1544,12 +1616,14 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             final Version since,
             final long deadlineNanos,
             final ReadConsistency level,
+            final Duration pollPeriod,
             final int poll,
             final GetResult best) {
         final int startAttempt = level == ReadConsistency.SERIALIZABLE ? poll : 0;
         return get(key.duplicate(), level, startAttempt).handleAsync((observed, error) -> {
             if (error != null) {
-                return onWatchPollFailed(key, since, deadlineNanos, level, poll, best, unwrap(error));
+                return onWatchPollFailed(key, since, deadlineNanos, level, pollPeriod, poll, best,
+                        unwrap(error));
             }
             final GetResult latest = moreRecent(best, observed);
             if (latest.version().compareTo(since) > 0) {
@@ -1558,8 +1632,9 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             if (elapsed(deadlineNanos)) {
                 return CompletableFuture.completedFuture(WatchResult.unchanged(latest));
             }
-            return delay(randomWatchBackoff()).thenComposeAsync(ignored ->
-                    watchAttempt(key.duplicate(), since, deadlineNanos, level, poll + 1, latest),
+            return delay(watchPollGap(pollPeriod, deadlineNanos)).thenComposeAsync(ignored ->
+                    watchAttempt(key.duplicate(), since, deadlineNanos, level, pollPeriod,
+                            poll + 1, latest),
                     asyncCallbacks);
         }, asyncCallbacks).thenComposeAsync(next -> next, asyncCallbacks);
     }
@@ -1599,6 +1674,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             final Version since,
             final long deadlineNanos,
             final ReadConsistency level,
+            final Duration pollPeriod,
             final int poll,
             final GetResult best,
             final Throwable cause) {
@@ -1612,8 +1688,8 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                     ? failedWatch(cause)
                     : CompletableFuture.completedFuture(WatchResult.unchanged(best));
         }
-        return delay(randomWatchBackoff()).thenComposeAsync(ignored ->
-                watchAttempt(key.duplicate(), since, deadlineNanos, level, poll + 1, best),
+        return delay(watchPollGap(pollPeriod, deadlineNanos)).thenComposeAsync(ignored ->
+                watchAttempt(key.duplicate(), since, deadlineNanos, level, pollPeriod, poll + 1, best),
                 asyncCallbacks);
     }
 
@@ -1676,8 +1752,19 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         return randomBetween(lockMinBackoff, lockMaxBackoff);
     }
 
-    private Duration randomWatchBackoff() {
-        return randomBetween(watchMinBackoff, watchMaxBackoff);
+    /**
+     * How long to leave before the next poll of a watch, never past what is left of the budget.
+     * <p>
+     * Spread above the period rather than around it, so the period stays the floor it is
+     * documented to be, and watches started together drift apart instead of polling in step. The
+     * cap matters because the spread reaches five times the period: a gap allowed to overshoot
+     * would have the caller waiting {@code maxWait} plus most of a poll gap, and {@code maxWait}
+     * is what the caller was promised.
+     */
+    private Duration watchPollGap(final Duration period, final long deadlineNanos) {
+        final Duration gap = randomBetween(period, period.multipliedBy(WATCH_POLL_SPREAD));
+        final long leftNanos = deadlineNanos - System.nanoTime();
+        return leftNanos > 0 && leftNanos < gap.toNanos() ? Duration.ofNanos(leftNanos) : gap;
     }
 
     private static Duration randomBetween(final Duration min, final Duration max) {
