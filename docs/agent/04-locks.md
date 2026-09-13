@@ -43,6 +43,7 @@ failure to reach the cluster fails the request.
 | `HELD_BY_SELF` | a live lease already stands under *your* `owner` -- see [below](#when-you-do-not-know-whether-you-got-it) |
 | `TIMED_OUT` | only with `&wait=`: your budget ran out while it stayed held |
 | `NOT_LOCK_RECORD` | that key holds something that is not a lock -- you are colliding with other data |
+| `NOT_HELD` | you lost the write to somebody who left the key free -- nobody holds it, so ask again |
 
 ```json
 {"status":"HELD_BY_OTHER","acquired":false,"info":{"owner":"worker-3","generation":1,"acquiredAtEpochMs":1787504798215,"leaseUntilEpochMs":1787504828215,"expired":false}}

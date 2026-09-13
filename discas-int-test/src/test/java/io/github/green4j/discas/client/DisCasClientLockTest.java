@@ -12,6 +12,7 @@ import io.github.green4j.discas.client.lock.LockAcquireStatus;
 import io.github.green4j.discas.client.lock.LockInfoResult;
 import io.github.green4j.discas.client.lock.LockInfoStatus;
 import io.github.green4j.discas.client.lock.LockToken;
+import io.github.green4j.discas.client.lock.LockValueCodec;
 import io.github.green4j.discas.TestBytes;
 import io.github.green4j.discas.TestCluster;
 
@@ -31,6 +32,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -50,6 +52,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 // three-node cluster per test bought isolation nothing needed and cost twenty-five start-ups.
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class DisCasClientLockTest {
+    /** Enough turns of the race for the interleaving this is about to come up. */
+    private static final int RACE_ATTEMPTS = 150;
+
     private TestCluster cluster;
 
     @BeforeAll
@@ -195,6 +200,60 @@ class DisCasClientLockTest {
             final ExecutionException e = assertThrows(ExecutionException.class,
                     () -> client.recoverLock(TestBytes.utf8("lock-no-owner"), "").get(8, TimeUnit.SECONDS));
             assertInstanceOf(IllegalArgumentException.class, e.getCause());
+        }
+
+        /**
+         * An acquire that loses its fenced write takes a second look to say who won, and that look
+         * has to judge the key the way the first one did: only a live lease is somebody's. A winner
+         * that left no lease -- here a delete, and a release or a lapse the same way -- leaves
+         * nothing to name, so the answer is NOT_HELD and the key is free to try for again.
+         * <p>
+         * The interleaving cannot be staged from outside the client, so it is raced -- but one
+         * competing write per attempt rather than a free-running writer, which simply starves the
+         * acquirer of a key free enough to write to. Each turn clears the key, sets one lease going
+         * and takes it away again, and asks for the lock across it.
+         */
+        @Test
+        @DisplayName("Never reports a key nobody holds as somebody else's")
+        void refusalNamesOnlyALiveHolder() throws Exception {
+            final DisCasClient acquirer = cluster.client(0);
+            final DisCasClient writer = cluster.client(1);
+            final ByteBuffer key = TestBytes.utf8("lock-lost-to-a-free-key");
+
+            int reachedTheWrite = 0;
+            for (int attempt = 0; attempt < RACE_ATTEMPTS; attempt++) {
+                writer.delete(key.duplicate()).get(8, TimeUnit.SECONDS);
+
+                final CompletableFuture<?> race = writer.put(key.duplicate(), foreignLease())
+                        .thenCompose(ignored -> writer.delete(key.duplicate()));
+                final LockAcquireResult result = acquirer
+                        .tryLock(key.duplicate(), Duration.ofSeconds(60), "owner-A")
+                        .get(8, TimeUnit.SECONDS);
+                race.get(8, TimeUnit.SECONDS);
+
+                if (result.status() == LockAcquireStatus.HELD_BY_OTHER
+                        || result.status() == LockAcquireStatus.HELD_BY_SELF) {
+                    assertNotNull(result.observed(), "a lease said to be held has a holder to name");
+                    assertFalse(result.observed().expired(), "a lease said to be held is a live one");
+                    continue;
+                }
+                // Both remaining answers say the first read found the key free and the fenced write
+                // went out -- which is the only way to the second look this is about.
+                reachedTheWrite++;
+                if (result.acquired()) {
+                    // Let go at once: a lease of our own left standing would answer every remaining
+                    // attempt HELD_BY_SELF and the race would be over.
+                    result.lock().release().get(8, TimeUnit.SECONDS);
+                }
+            }
+            assertTrue(reachedTheWrite > 0, "the race never got as far as a write to lose");
+        }
+
+        /** A live lease under a name of the writer's own, to lose the compare to. */
+        private ByteBuffer foreignLease() {
+            final long now = System.currentTimeMillis();
+            return LockValueCodec.encode(new LockValueCodec.LockRecord(
+                    "owner-B", ByteBuffer.wrap(new byte[] {1, 2, 3, 4}), now, now + 60_000L, 1L));
         }
     }
 

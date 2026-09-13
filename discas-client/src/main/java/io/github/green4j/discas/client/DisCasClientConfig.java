@@ -56,11 +56,12 @@ public final class DisCasClientConfig {
     private Duration lockMinBackoff = Duration.ofMillis(20);
     private Duration lockMaxBackoff = Duration.ofMillis(80);
 
-    // Randomised re-poll window for a watch whose key has not changed. Longer than the lock
-    // window: a watch is a standing query, so the cost of polling too eagerly is load on every
-    // node rather than latency for one caller.
-    private Duration watchMinBackoff = Duration.ofMillis(200);
-    private Duration watchMaxBackoff = Duration.ofMillis(1000);
+    // The shortest gap between one poll of a watch answering "unchanged" and the next, measured
+    // from the answer rather than from the request, so a slow round cannot be followed immediately
+    // by another. The gap actually taken is drawn from [period, period * WATCH_POLL_SPREAD]: a
+    // watch is a standing query, so polling too eagerly costs load on every node rather than
+    // latency for one caller, and watches started together must not stay in step.
+    private Duration watchPollPeriod = Duration.ofSeconds(1);
 
     private DisCasClientConfig() {
     }
@@ -75,8 +76,7 @@ public final class DisCasClientConfig {
         this.shutdownAwaitTimeout = other.shutdownAwaitTimeout;
         this.lockMinBackoff = other.lockMinBackoff;
         this.lockMaxBackoff = other.lockMaxBackoff;
-        this.watchMinBackoff = other.watchMinBackoff;
-        this.watchMaxBackoff = other.watchMaxBackoff;
+        this.watchPollPeriod = other.watchPollPeriod;
     }
 
     /** Defaults for every tunable. */
@@ -140,14 +140,20 @@ public final class DisCasClientConfig {
         return lockMaxBackoff;
     }
 
-    /** Lower bound of the randomised watch re-poll window (default 200ms). */
-    public Duration watchMinBackoff() {
-        return watchMinBackoff;
-    }
 
-    /** Upper bound of the randomised watch re-poll window (default 1000ms). */
-    public Duration watchMaxBackoff() {
-        return watchMaxBackoff;
+    /**
+     * The shortest gap between a poll of a watch and the next (default 1s), counted from the
+     * moment the poll answered. The gap taken is spread up to five times this, so the default
+     * paces a watch at one poll every one to five seconds.
+     * <p>
+     * This is the client-wide setting and the only way below
+     * {@link DisCasClient#MIN_WATCH_POLL_PERIOD}, which the per-call
+     * {@link DisCasClient#watch(java.nio.ByteBuffer, Version, Duration, io.github.green4j.discas.common.client.ReadConsistency, Duration)}
+     * refuses. Going below it is a deliberate, whole-client decision, which is what it is here and
+     * is not what a period passed at a call site is.
+     */
+    public Duration watchPollPeriod() {
+        return watchPollPeriod;
     }
 
     /**
@@ -209,15 +215,9 @@ public final class DisCasClientConfig {
             return this;
         }
 
-        /** @see DisCasClientConfig#watchMinBackoff() */
-        public Builder watchMinBackoff(final Duration value) {
-            cfg.watchMinBackoff = requirePositive(value, "watchMinBackoff");
-            return this;
-        }
-
-        /** @see DisCasClientConfig#watchMaxBackoff() */
-        public Builder watchMaxBackoff(final Duration value) {
-            cfg.watchMaxBackoff = requirePositive(value, "watchMaxBackoff");
+        /** @see DisCasClientConfig#watchPollPeriod() */
+        public Builder watchPollPeriod(final Duration value) {
+            cfg.watchPollPeriod = requirePositive(value, "watchPollPeriod");
             return this;
         }
 
@@ -230,7 +230,6 @@ public final class DisCasClientConfig {
             // Checked here rather than in the setters: either half of a pair can legitimately be
             // set first, so a setter cannot know whether the pair is inconsistent yet.
             requireOrdered(cfg.lockMinBackoff, cfg.lockMaxBackoff, "lock");
-            requireOrdered(cfg.watchMinBackoff, cfg.watchMaxBackoff, "watch");
             requireOrdered(cfg.peerRetryMinBackoff, cfg.peerRetryMaxBackoff, "peerRetry");
             // A deadline at or below one attempt's timeout would cut the first coordinator off
             // before its turn was up, turning every operation into an immediate failure.

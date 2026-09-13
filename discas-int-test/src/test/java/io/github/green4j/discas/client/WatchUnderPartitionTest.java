@@ -120,9 +120,10 @@ class WatchUnderPartitionTest {
     private DisCasClient clientOver(final ClientTransport transport) {
         client = new DisCasClient(CLIENT, transport, new EventLoop("cas-client-watch-test"),
                 true, ClientObserver.NONE, DisCasClientConfig.builder()
-                        // Poll briskly so a handful of attempts fit in the test's budget.
-                        .watchMinBackoff(Duration.ofMillis(20))
-                        .watchMaxBackoff(Duration.ofMillis(40))
+                        // Poll briskly so a handful of attempts fit in the test's budget. Below
+                        // MIN_WATCH_POLL_PERIOD, which is what the config is for: a whole client
+                        // saying it means it, rather than a number at one call site.
+                        .watchPollPeriod(Duration.ofMillis(20))
                         .build());
         return client;
     }

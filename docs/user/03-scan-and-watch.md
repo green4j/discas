@@ -104,11 +104,16 @@ pass it back. `Version.INITIAL` means "I have seen nothing", so an existing key 
 absent one blocks until it appears.
 
 **It is a client-side poll, and each poll is a read.** There is no server-side subscription: the
-client re-reads the key on a backoff between `watchMinBackoff` and `watchMaxBackoff` (200 ms to 1 s
-by default) until the version moves. At the default `LINEARIZABLE` that is a full consensus round
-per poll, so a watch costs roughly one write per second per key. Two consequences: notice latency is
-bounded by the backoff rather than being immediate, and a watch you can afford to be slightly stale
-should say so --
+client re-reads the key until the version moves, leaving at least `watchPollPeriod` between one poll
+and the next -- one second by default, and spread up to five times that so watches started together
+do not stay in step. The gap is counted from the moment a poll *answered*, so a round that took a
+second is not followed straight away by another, and it is shortened only to keep the call inside
+the `maxWait` the caller asked for.
+
+At the default `LINEARIZABLE` each poll is a full consensus round, so one watch costs the cluster a
+round every one to five seconds -- and that is per outstanding watch, not per key. Two consequences:
+notice latency is bounded by the period rather than being immediate, and a watch you can afford to
+be slightly stale should say so --
 
 ```java
 client.watch(utf8("config/timeout"), seen, Duration.ofSeconds(30),
@@ -117,6 +122,20 @@ client.watch(utf8("config/timeout"), seen, Duration.ofSeconds(30),
 
 `maxWait` is measured on a monotonic clock, so an NTP step during the wait cannot shorten or extend
 it.
+
+**One watch can pace itself.** A key worth hearing about sooner, or a key not worth a round a second
+at all, takes the period as an argument rather than making it everybody's setting:
+
+```java
+client.watch(utf8("jobs/nightly/state"), seen, Duration.ofMinutes(5),
+        ReadConsistency.LINEARIZABLE,
+        Duration.ofSeconds(10));      // at least ten seconds between polls
+```
+
+`DisCasClient.MIN_WATCH_POLL_PERIOD` is the floor -- 500 ms -- and a shorter period is refused rather
+than quietly rounded up, because a caller that believes it polls ten times a second and does not is
+worse off than one told it cannot. A whole client that means it sets `watchPollPeriod`; that is the
+one deliberate, client-wide decision allowed under the floor.
 
 **A serializable watch rotates over the members.** A serializable poll is answered from one member's
 local state, so asking the same member again returns the same answer no matter how many times you

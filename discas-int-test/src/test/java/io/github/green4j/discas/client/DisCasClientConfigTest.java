@@ -145,15 +145,14 @@ class DisCasClientConfigTest {
         assertEquals(Duration.ofSeconds(5), cfg.shutdownAwaitTimeout());
         assertEquals(Duration.ofMillis(20), cfg.lockMinBackoff());
         assertEquals(Duration.ofMillis(80), cfg.lockMaxBackoff());
-        assertEquals(Duration.ofMillis(200), cfg.watchMinBackoff());
-        assertEquals(Duration.ofMillis(1000), cfg.watchMaxBackoff());
+        assertEquals(Duration.ofSeconds(1), cfg.watchPollPeriod());
 
         // And overriding one of them leaves the rest where they were.
         final DisCasClientConfig overridden = DisCasClientConfig.builder()
                 .scanTimeout(Duration.ofSeconds(2)).build();
         assertEquals(Duration.ofSeconds(2), overridden.scanTimeout());
         assertEquals(Duration.ofSeconds(5), overridden.perAttemptTimeout());
-        assertEquals(Duration.ofMillis(200), overridden.watchMinBackoff());
+        assertEquals(Duration.ofSeconds(1), overridden.watchPollPeriod());
     }
 
     @Test
@@ -187,10 +186,6 @@ class DisCasClientConfigTest {
         final DisCasClientConfig.Builder lock = DisCasClientConfig.builder()
                 .lockMinBackoff(Duration.ofMillis(500));
         assertThrows(IllegalArgumentException.class, lock::build);
-
-        final DisCasClientConfig.Builder watch = DisCasClientConfig.builder()
-                .watchMaxBackoff(Duration.ofMillis(50));
-        assertThrows(IllegalArgumentException.class, watch::build);
 
         // ...and setting both halves consistently is fine, in either order.
         DisCasClientConfig.builder()
