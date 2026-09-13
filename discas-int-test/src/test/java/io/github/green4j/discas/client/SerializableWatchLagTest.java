@@ -56,6 +56,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SerializableWatchLagTest {
 
     private static final int LAGGARD = 3;
+    /**
+     * Two polls at the floor period, which is the home coordinator and then the member after it.
+     * The gap after a poll is drawn from {@code [500ms, 2500ms]} and is capped at what is left of
+     * the budget, so three seconds cannot fit fewer than two polls however the draws fall.
+     */
     private static final Duration WATCH_BUDGET = Duration.ofSeconds(3);
 
     private TestCluster cluster;
@@ -135,7 +140,8 @@ class SerializableWatchLagTest {
         // Successive polls address successive members, so the change is found on one of the two
         // that hold it rather than waited out on the one that does not.
         final WatchResult observed = watcher
-                .watch(key.duplicate(), v0, WATCH_BUDGET, ReadConsistency.SERIALIZABLE)
+                .watch(key.duplicate(), v0, WATCH_BUDGET, ReadConsistency.SERIALIZABLE,
+                        DisCasClient.MIN_WATCH_POLL_PERIOD)
                 .get(30, TimeUnit.SECONDS);
         assertTrue(observed.changed(),
                 "A change two reachable members hold must be observed");
@@ -146,7 +152,8 @@ class SerializableWatchLagTest {
         // quiet -- but at the caller's own version, not at the laggard's older one. Feeding
         // version() into the next watch, which is what its javadoc says to do, cannot regress.
         final WatchResult quiet = watcher
-                .watch(key.duplicate(), v1, WATCH_BUDGET, ReadConsistency.SERIALIZABLE)
+                .watch(key.duplicate(), v1, WATCH_BUDGET, ReadConsistency.SERIALIZABLE,
+                        DisCasClient.MIN_WATCH_POLL_PERIOD)
                 .get(30, TimeUnit.SECONDS);
         assertFalse(quiet.changed());
         assertTrue(quiet.version().compareTo(v1) >= 0,
@@ -159,7 +166,8 @@ class SerializableWatchLagTest {
         // The change is genuinely there and genuinely reachable: a linearizable watch sees it,
         // because its poll runs a round, is refused by the isolated member and moves on.
         final WatchResult linearizable = watcher
-                .watch(key.duplicate(), v0, WATCH_BUDGET, ReadConsistency.LINEARIZABLE)
+                .watch(key.duplicate(), v0, WATCH_BUDGET, ReadConsistency.LINEARIZABLE,
+                        DisCasClient.MIN_WATCH_POLL_PERIOD)
                 .get(30, TimeUnit.SECONDS);
         assertTrue(linearizable.changed(), "The change must be visible to a linearizable watch");
         assertEquals(v1, linearizable.version());

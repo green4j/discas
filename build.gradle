@@ -7,8 +7,11 @@
 
 import io.github.green4j.discas.build.SonatypeCentralPortalUploadRepositoryTask
 
+import javax.inject.Inject
+import org.gradle.process.ExecOperations
+
 plugins {
-    id 'com.github.johnrengelman.shadow' version '7.1.2' apply false
+    id 'com.gradleup.shadow' version '8.3.6' apply false
 }
 
 // The root carries jacoco for the aggregated coverageReport at the bottom of this file, and so
@@ -301,7 +304,7 @@ configure([commonProject,
         if (docker) {
             try {
                 def out = new ByteArrayOutputStream()
-                def result = exec {
+                def result = objects.newInstance(ProcessRunner).execOperations.exec {
                     commandLine docker, 'context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'
                     standardOutput = out
                     errorOutput = new ByteArrayOutputStream()
@@ -500,7 +503,7 @@ configure(adminProject) {
 configure(allProject) {
     apply plugin: 'maven-publish'
     apply plugin: 'signing'
-    apply plugin: 'com.github.johnrengelman.shadow'
+    apply plugin: 'com.gradleup.shadow'
 
     description = 'DisCas All - bundled jar of discas-common, -node, -client, -agent and -admin'
 
@@ -749,4 +752,11 @@ tasks.register('uploadArtifactsToSonatypeCentralPortal', SonatypeCentralPortalUp
     portalPassword.set(sonatypePassword)
     groupId.set(projectGroup)
     snapshotRelease.set(!isRelease)
+}
+
+// ExecOperations is the supported way to run a process from a build script, and reaches one only
+// through injection. It replaces Project.exec, which warns on Gradle 8 and is gone in 9.
+abstract class ProcessRunner {
+    @Inject
+    abstract ExecOperations getExecOperations()
 }
