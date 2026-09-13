@@ -57,6 +57,7 @@ public final class NodeConfig {
     private final Duration promiseEvictionInterval;
     private final Duration walForceInterval;
     private final double storeHeapFraction;
+    private final int auditBufferBytes;
 
     /**
      * Identity with every timing default in place. Equivalent to
@@ -102,6 +103,17 @@ public final class NodeConfig {
                     "storeHeapFraction must be in (0, 1], got " + b.storeHeapFraction);
         }
         this.storeHeapFraction = b.storeHeapFraction;
+        if (b.auditBufferBytes < 0
+                || (b.auditBufferBytes > 0 && Integer.bitCount(b.auditBufferBytes) != 1)) {
+            throw new IllegalArgumentException(
+                    "auditBufferBytes must be zero or a power of two, got " + b.auditBufferBytes);
+        }
+        this.auditBufferBytes = b.auditBufferBytes;
+        if (auditBufferBytes > heapBudgetBytes() / 4) {
+            throw new IllegalArgumentException("auditBufferBytes " + auditBufferBytes
+                    + " takes more than a quarter of the node's " + heapBudgetBytes()
+                    + " byte heap data budget, which the store also comes out of");
+        }
     }
 
     /**
@@ -242,8 +254,8 @@ public final class NodeConfig {
     }
 
     /**
-     * The share of the JVM's maximum heap this node's store may be estimated to occupy before it
-     * refuses to take more. Default 0.8.
+     * The share of the JVM's maximum heap this node's data may occupy: the store, and the audit
+     * buffer when one is configured. Default 0.8.
      * <p>
      * <b>An estimate of the footprint, not of the payload and not a measurement.</b> Each key is
      * charged its own bytes plus {@code LocalStore.ENTRY_FOOTPRINT_BYTES} for the objects around it,
@@ -257,6 +269,9 @@ public final class NodeConfig {
      * requests. The share left over has to cover those, which is the reason to lower this rather
      * than raise it.
      * <p>
+     * The store gets this budget less {@link #auditBufferBytes()}, so switching the audit on makes
+     * a node hold less rather than use more.
+     * <p>
      * A delete is never refused against this budget -- a store with no way to shrink has no way back.
      */
     public double storeHeapFraction() {
@@ -264,8 +279,21 @@ public final class NodeConfig {
     }
 
     /** The budget in bytes: {@link #storeHeapFraction()} of this JVM's maximum heap. */
-    public long storeCapacityBytes() {
+    public long heapBudgetBytes() {
         return (long) (Runtime.getRuntime().maxMemory() * storeHeapFraction);
+    }
+
+    /** What is left of {@link #heapBudgetBytes()} once the audit buffer is taken out. */
+    public long storeCapacityBytes() {
+        return heapBudgetBytes() - auditBufferBytes;
+    }
+
+    /**
+     * Size of the audit ring, zero when no audit is configured. An absolute number of bytes, not a
+     * share: it is a fixed queue whose size follows the record rate, not the heap.
+     */
+    public int auditBufferBytes() {
+        return auditBufferBytes;
     }
 
     /**
@@ -344,6 +372,9 @@ public final class NodeConfig {
         // to grow. The remaining fifth is what WAL buffers, the snapshot writer and in-flight
         // requests have to fit in, which is what makes this a ceiling rather than a target.
         private double storeHeapFraction = 0.8;
+
+        // Bytes for the audit ring, out of the same budget as the store. Zero: no audit, no ring.
+        private int auditBufferBytes = 0;
 
         private Builder() {
         }
@@ -471,6 +502,17 @@ public final class NodeConfig {
         public Builder walForceInterval(final Duration value) {
             this.walForceInterval = requirePositive(value, "walForceInterval");
             return this;
+        }
+
+        /** @see NodeConfig#auditBufferBytes() */
+        public Builder auditBufferBytes(final int value) {
+            this.auditBufferBytes = value;
+            return this;
+        }
+
+        /** @see NodeConfig#auditBufferBytes() */
+        public int auditBufferBytes() {
+            return auditBufferBytes;
         }
 
         /** @see NodeConfig#storeHeapFraction() */

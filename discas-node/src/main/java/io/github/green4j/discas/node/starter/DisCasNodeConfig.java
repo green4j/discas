@@ -16,6 +16,7 @@ import io.github.green4j.discas.common.identity.NodeId;
 import io.github.green4j.discas.common.client.ClientTransportConfig;
 import io.github.green4j.discas.node.DisCasNode;
 import io.github.green4j.discas.node.NodeConfig;
+import io.github.green4j.discas.node.audit.FileAuditConfig;
 import io.github.green4j.discas.common.observability.ObservabilityConfig;
 import io.github.green4j.discas.node.transport.TcpTransportConfig;
 import io.github.green4j.discas.node.wal.StorageConfig;
@@ -167,6 +168,11 @@ public final class DisCasNodeConfig {
      * When unset the node is permissive -- every authenticated client may do anything.
      */
     final Path clientAclFile;
+    /**
+     * Audit settings ({@code --audit-config-file}). Unset: nothing is recorded, no ring is
+     * allocated, and the store keeps the whole heap data budget.
+     */
+    public final Path auditConfigFile;
     /** Whether the client port runs TLS ({@code --client-tls}); default {@code false}. */
     public final boolean clientTls;
     /** The node's client-facing server certificate and key ({@code --client-tls-keystore}). */
@@ -233,6 +239,9 @@ public final class DisCasNodeConfig {
                         "snapshot-retention", STORAGE_DEFAULTS.snapshotRetentionCount(), 1))
                 .build();
 
+        final String auditFile = r.optional("audit-config-file");
+        this.auditConfigFile = auditFile == null ? null : Path.of(auditFile);
+
         this.nodeConfig = NodeConfig.builder()
                 .nodeId(nodeId)
                 .clusterId(clusterId)
@@ -268,6 +277,8 @@ public final class DisCasNodeConfig {
                         "wal-force-interval-ms", NODE_DEFAULTS.walForceInterval().toMillis(), 1)))
                 .storeHeapFraction(Double.parseDouble(r.optional("store-heap-fraction",
                         Double.toString(NODE_DEFAULTS.storeHeapFraction()))))
+                .auditBufferBytes(auditConfigFile == null
+                        ? 0 : FileAuditConfig.bufferBytesOf(auditConfigFile))
                 .build();
 
         final InetSocketAddress observabilityBind = ConfigSupport.parseAddress(
@@ -639,6 +650,11 @@ public final class DisCasNodeConfig {
                 .stringOpt("client-acl-file", null, ConfigSupport.helpWithEnv("client-acl-file",
                         "Authorization file, acl.<id>=<prefix>:<OPS> ; ... , re-read on POST "
                                 + "/reload. Without it every authenticated client may access every key."))
+                .metavar("<path>")
+                .stringOpt("audit-config-file", null, ConfigSupport.helpWithEnv("audit-config-file",
+                        "Audit settings, audit.<name>=<value>, re-read on POST /reload. Without it "
+                                + "nothing is recorded. The buffer it asks for comes out of the "
+                                + "same heap budget as the store."))
                 .metavar("<path>")
                 .stringOpt("client-tls", null, ConfigSupport.helpWithEnv("client-tls",
                         "Enable TLS on the client port [default: " + DEFAULT_CLIENT_TLS + "; implied by "

@@ -44,6 +44,15 @@ public final class Hex {
         return new String(out);
     }
 
+    /** Append {@code length} bytes from {@code offset} as lowercase hex, allocating nothing. */
+    public static void appendTo(final StringBuilder out, final byte[] bytes, final int offset,
+                                final int length) {
+        for (int i = 0; i < length; i++) {
+            final int v = bytes[offset + i] & 0xFF;
+            out.append(DIGITS[v >>> 4]).append(DIGITS[v & 0x0F]);
+        }
+    }
+
     /**
      * Decode lowercase or uppercase hex to bytes.
      *

@@ -13,6 +13,7 @@ import io.github.green4j.discas.common.client.InProcessClientRegistry;
 import io.github.green4j.discas.node.transport.InProcessPeerBootstrap;
 import io.github.green4j.discas.node.transport.InProcessPeerTransport;
 import io.github.green4j.discas.node.transport.PeerTransport;
+import io.github.green4j.discas.node.audit.NodeAudit;
 import io.github.green4j.discas.node.transport.TcpClientServerBootstrap;
 import io.github.green4j.discas.node.transport.TcpClientServerTransport;
 import io.github.green4j.discas.node.transport.TcpPeerBootstrap;
@@ -56,6 +57,16 @@ public final class DisCasNodeFactory {
             final TcpPeerBootstrap bootstrap,
             final Wal wal,
             final NodeObserver observer) {
+        return create(cfg, bootstrap, wal, observer, NodeAudit.NONE);
+    }
+
+    /** @param audit where client activity is recorded; {@link NodeAudit#NONE} records nothing. */
+    public static DisCasNode create(
+            final NodeConfig cfg,
+            final TcpPeerBootstrap bootstrap,
+            final Wal wal,
+            final NodeObserver observer,
+            final NodeAudit audit) {
         // Route loop failures into the observer rather than stderr; NodeObserver.NONE stays silent
         // by choice, and StderrNodeObserver prints them.
         final NodeObserver loopObserver = observer == null ? NodeObserver.NONE : observer;
@@ -75,7 +86,7 @@ public final class DisCasNodeFactory {
                 // so a restart on the same directory must present the same one or every peer would
                 // refuse an ordinary restart.
                 wal.incarnation());
-        return new DisCasNode(cfg, wal, loop, peerTransport, observer);
+        return new DisCasNode(cfg, wal, loop, peerTransport, observer, audit);
     }
 
     /**
@@ -100,6 +111,7 @@ public final class DisCasNodeFactory {
                 node.clusterSize(),
                 bootstrap.authenticator,
                 bootstrap.securityProvider);
+        clientServer.registerAudit(node.auditRecorder());
         node.addLifecycleCloseable(clientServer);
         node.registerClientMessages(clientServer::registerIngress);
         return clientServer;
@@ -127,6 +139,16 @@ public final class DisCasNodeFactory {
             final InProcessPeerBootstrap bootstrap,
             final Wal wal,
             final NodeObserver observer) {
+        return create(cfg, bootstrap, wal, observer, NodeAudit.NONE);
+    }
+
+    /** @param audit where client activity is recorded; {@link NodeAudit#NONE} records nothing. */
+    public static DisCasNode create(
+            final NodeConfig cfg,
+            final InProcessPeerBootstrap bootstrap,
+            final Wal wal,
+            final NodeObserver observer,
+            final NodeAudit audit) {
         // Route loop failures into the observer rather than stderr; NodeObserver.NONE stays silent
         // by choice, and StderrNodeObserver prints them.
         final NodeObserver loopObserver = observer == null ? NodeObserver.NONE : observer;
@@ -138,7 +160,7 @@ public final class DisCasNodeFactory {
                 loop,
                 bootstrap.members,
                 loopObserver);
-        final DisCasNode node = new DisCasNode(cfg, wal, loop, peerTransport, observer);
+        final DisCasNode node = new DisCasNode(cfg, wal, loop, peerTransport, observer, audit);
         node.registerClientMessages(registrar ->
                 InProcessClientRegistry.register(cfg.nodeId, node.loop(), registrar, cfg.clusterSize));
         return node;

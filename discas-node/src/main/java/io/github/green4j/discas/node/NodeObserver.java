@@ -128,6 +128,13 @@ public interface NodeObserver {
                                final long capacityBytes) {
     }
 
+    /**
+     * Audit records the buffer had no room for, since this was last reported. Their content is
+     * gone; this is what is left of them.
+     */
+    default void auditRecordsDropped(final long records) {
+    }
+
     /** A prepare was rejected by an acceptor already promised to {@code promised}. */
     default void prepareRejected(final Ballot promised) {
     }

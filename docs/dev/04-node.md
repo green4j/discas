@@ -103,6 +103,21 @@ NodeObserver observer =
 and, where the condition is ordinarily transient, a window (`normalFor`) it must persist for before
 anything is reported. That is why there is no warning level: transience is handled by the window.
 
+**The audit is a seam of its own**, and the opposite contract: `NodeObserver` fires on the loop and
+must not block or allocate, while `AuditLog` is called on the audit drain thread and may do both.
+They answer different questions -- rates and states there, who did what here. Between them sits
+`AuditRing`, a binary circular buffer on the heap: the loop encodes a record and returns, the drain
+renders it. What the record keeps of a key or a value is decided on the loop, because what is not
+copied in is gone; that is also why the digest has a size limit. A full buffer drops records by
+default (`AuditOverflow`), counted and reported through `NodeObserver.auditRecordsDropped`.
+
+A reader of the trail needs the same two facts the request flow above states: five operations exist
+on the wire, so a `lock` taken by a client is a CAS here, and a coordinator is per operation, so one
+node's trail holds only the keys that hashed to it.
+
+The ring comes out of the same heap budget as the store: `NodeConfig.heapBudgetBytes()` less
+`auditBufferBytes()` is what `LocalStore` is sized with.
+
 Three endpoints, served on a port of their own (`NodeEndpoints`): `/metrics` (Prometheus text),
 `/health` (**liveness** -- local only, so a partition cannot become a cluster-wide crashloop) and
 `/ready` (**readiness** -- additionally quorum-connected).

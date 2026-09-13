@@ -93,6 +93,7 @@ line.
 | **Storage** | `--wal-dir`, `--wal-max-file-bytes`, `--snapshot-retention` |
 | **Runtime** | `--repair-interval-seconds`, `--round-timeout-ms`, `--round-max-retries`, `--proposal-expiry-ms`, `--round-retry-backoff-ms`, `--round-retry-jitter-ms`, `--no-quorum-backoff-ms`, `--peer-response-timeout-ms`, `--tombstone-sweep-interval-seconds`, `--snapshot-interval-seconds`, `--promise-eviction-interval-seconds`, `--wal-force-interval-ms`, `--store-heap-fraction`, `--shutdown-await-timeout-ms` |
 | **Observability** | `--observability-enabled`, `--observability-bind`, `--observability-workers`, `--peer-max-frame-bytes`, `--peer-max-queued-out-bytes`, `--peer-max-rx-buffer-bytes`, `--peer-max-inflight-bytes`, `--peer-max-connections`, `--peer-force-reconnect`, `--peer-reconnect-backoff-ms`, `--peer-reconnect-backoff-cap-ms`, `--client-max-frame-bytes`, `--client-max-queued-out-bytes`, `--client-max-rx-buffer-bytes`, `--client-max-inflight-bytes`, `--client-max-connections` |
+| **Audit** | `--audit-config-file` |
 | **Security (TLS/mTLS)** | `--tls`, `--tls-keystore`, `--tls-keystore-password`, `--tls-truststore`, `--tls-truststore-password`, `--tls-cert-rotation` |
 | **Security (client access)** | `--client-auth`, `--client-token-file`, `--client-token-dir`, `--client-acl-file`, `--client-tls`, `--client-tls-keystore`, `--client-tls-keystore-password`, `--client-tls-truststore`, `--client-tls-truststore-password`, `--client-tls-cert-rotation` |
 
@@ -209,6 +210,7 @@ clause.
 | `RELOAD_FAILED` | `CONFIG` | -- | Fix the file |
 | `MATERIAL_EXPIRING` | `CONFIG` | -- | Rotate this material before it expires |
 | `STORE_FULL` | `CAPACITY` | -- | Give this node more heap, or raise `--store-heap-fraction`, and restart it |
+| `AUDIT_RECORDS_DROPPED` | `CAPACITY` | -- | Raise `audit.buffer-bytes`, narrow what is recorded, or speed the sink up |
 | `UNHANDLED_ERROR` | `INTERNAL` | -- | Collect the stack trace and report it |
 
 -> [6. Monitoring](06-monitoring.md#operator-attention), [12. Troubleshooting](12-troubleshooting.md)
@@ -277,6 +279,7 @@ sample: one gauge per raised-and-due state, labelled `group`, `state` and `scope
 | `discas_node_unaccounted_keys_dropped_total` | counter | Keys dropped by a node that could not account for its own history and whose peers did not hold them. |
 | `discas_node_wal_degradations_total` | counter | Times the WAL was marked degraded. |
 | `discas_node_writes_refused_no_capacity_total` | counter | Client writes this coordinator refused before running a round, for want of room. |
+| `discas_node_audit_records_dropped_total` | counter | Audit records lost because the buffer was full. |
 | `discas_reload_check_failures_total` | counter | Checks around a source that threw. |
 | `discas_reload_failures_total` | counter | Reloads that were refused; the last good value was retained. |
 | `discas_reload_material_expires_seconds` | gauge | Unix seconds at which loaded material expires; 0 when nothing has warned. |

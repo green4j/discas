@@ -34,11 +34,12 @@ Under `io.github.green4j.discas`:
 | `common/dump` | the dump file format |
 | `common/operator` | `OperatorState`, `OperatorAttention`, `OperatorGroup` |
 | `common/metrics`, `common/observability` | registry, Prometheus text, the shared observability server |
-| `common/logging`, `common/identity`, `common/cli` | logger, `NodeId`/`ClientId`/`ClusterId`/`IncarnationId`, `GetOpts` |
+| `common/logging`, `common/identity`, `common/cli` | logger, `NodeId`/`ClientId`/`ClientDescription`/`ClientIdentity`/`ClusterId`/`IncarnationId`, `GetOpts` |
 | `node` | `DisCasNode`, `Proposer`, `Acceptor`, `LocalStore`, `AntiEntropy`, tombstones, observers |
 | `node/wal` | `FileWal`, segments, snapshots, `IncarnationMarker`, on-disk formats |
 | `node/transport` | peer mesh, client server, `PEER_HELLO`, `PromiseCeilingHistory` |
 | `node/acl`, `node/membership` | authorization; `Members` and its file source |
+| `node/audit` | `AuditLog` and its default logging sink, `AuditRing`, the recorder, the drain, `FileAuditConfig` |
 | `node/observability`, `node/seed`, `node/starter` | probes; member seeding; the standalone process |
 | `client` | `DisCasClient`, `Version`, `ClusterClock`, config, observers |
 | `client/lock`, `client/transport`, `client/dump` | locks; transports; `ClusterDump`/`ClusterLoad` |
@@ -57,6 +58,7 @@ Under `io.github.green4j.discas`:
 | `Members<T>` | node | `FileMembers` (reloadable), `InMemoryMembers` |
 | `ClientAuthenticator` | common | `AllowAll`, `Token`, mTLS |
 | `ClientAcl` | node | `FileClientAcl`, `InMemoryClientAcl` |
+| `AuditLog` / `AuditRecorder` | node | `LoggingAuditLog` (drain thread) / `RingAuditRecorder` (event loop) |
 | `PeerChannelSecurity` / `ClientChannelSecurity` | common | plaintext passthrough, `SSLEngine`-backed |
 | `Reloadable<T>` | common | `ReloadableFileSource` -- one contract for every file re-read on request |
 | `EventLoop.IoDriver` | common | both transports and the HTTP server's workers |

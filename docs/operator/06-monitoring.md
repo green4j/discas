@@ -165,6 +165,74 @@ Do not build alerting on log text. The states are the stable surface; the wordin
 
 ---
 
+## Audit
+
+Off unless `--audit-config-file` names a properties file. It says what is recorded and how much of
+it shows:
+
+```properties
+audit.sink                 = log          # the only implementation today
+audit.buffer-bytes         = 8388608      # rounded up to a power of two
+audit.overflow             = drop         # drop | wait
+audit.preview.head-bytes   = 16
+audit.preview.tail-bytes   = 16
+audit.preview.max-fraction = 0.25
+audit.hash.algorithm       = none         # none | sha-256 | sha-512
+audit.hash.salt            =              # never printed; only its id is
+audit.hash.max-bytes       = 65536        # above this nothing is digested
+audit.full.prefixes        = lock/ ; meta/
+audit.full.max-bytes       = 4096
+audit.text.prefixes        = config/
+```
+
+`audit.sink` and `audit.buffer-bytes` are read once at startup: a `POST /reload` that changes either
+is refused, since the ring cannot be resized under a live producer. Everything else takes effect on
+the next record.
+
+**The buffer comes out of the store's budget.** `--store-heap-fraction` is the share of max heap the
+node's *data* may occupy, and the store gets what is left after the ring, so switching the audit on
+makes a node hold less rather than use more.
+
+A line per event, on stdout with the rest of the log:
+
+```
+AUDIT SESSION_OPENED client=web-1 (Jenkins euc1-blue)
+AUDIT REQUEST client=web-1 (Jenkins euc1-blue) corr=42 op=PUT key=10:6170702f75736572..312f31 value=36:30313233..7a valueHash=sha-256:9b1c...
+AUDIT RESULT  client=web-1 (Jenkins euc1-blue) corr=42 op=PUT ok error=NONE version=17@n1
+```
+
+Read it knowing two things about what the node sees:
+
+- **Five operations exist on the wire** -- GET, PUT, CAS, DELETE, SCAN. `lock`, `watch` and
+  `update` are compositions the client builds out of GET and CAS, so a lock taken shows up as a CAS.
+- **A coordinator is per operation.** A client routes each request by the hash of its key, so one
+  node's trail holds only the share of that client's work whose keys landed on it. The whole trail
+  of one client is the union across the members.
+
+### Reproducing a digest
+
+A value is not printed whole, so the digest is what lets you check a candidate against the line. The
+line names the function and, when salted, the id of the salt (the first four bytes of the salt's own
+digest, so the line says *which* salt without saying what it is):
+
+```console
+$ printf '%s' "$VALUE" | sha256sum                       # audit.hash.salt unset
+$ { printf '%s' "$SALT"; printf '%s' "$VALUE"; } | sha256sum   # salt first, then the bytes
+```
+
+Keep the config file readable only by the node's user: it holds the salt, and a leaked salt makes
+every digest in the log brute-forceable for values from a small set.
+
+### When records are lost
+
+`audit.overflow = drop` is the default: a record that does not fit is dropped and counted rather
+than made the event loop's problem. The loss is reported three ways -- `AUDIT RECORDS_LOST lost=N`
+in the trail itself, `discas_node_audit_records_dropped_total`, and the `AUDIT_RECORDS_DROPPED`
+operator state. `audit.overflow = wait` makes the loop wait for room instead, which stalls
+consensus and every client of the node until the sink catches up.
+
+---
+
 ## Impact
 
 | Action | Effect |

@@ -43,6 +43,9 @@ import io.github.green4j.discas.common.metrics.MetricRegistry;
 import io.github.green4j.discas.common.operator.OperatorAttention;
 import io.github.green4j.discas.common.operator.OperatorState;
 import io.github.green4j.discas.node.acl.FileClientAcl;
+import io.github.green4j.discas.node.audit.FileAuditConfig;
+import io.github.green4j.discas.node.audit.LoggingAuditLog;
+import io.github.green4j.discas.node.audit.NodeAudit;
 import io.github.green4j.discas.node.membership.FileMembers;
 import io.github.green4j.discas.node.membership.InMemoryMembers;
 import io.github.green4j.discas.node.membership.Members;
@@ -154,11 +157,27 @@ public final class DisCasNodeStarter {
                         new LoggingNodeObserver(log, attention, NodeObserver.NONE)));
         peerState.registerMetrics(metrics);
 
+        // Audit: a sink and the settings it starts with, or nothing at all. The buffer was already
+        // taken out of the store's budget when cfg.nodeConfig was assembled from the same file.
+        final FileAuditConfig auditConfig = cfg.auditConfigFile == null
+                ? null : new FileAuditConfig(cfg.auditConfigFile, reload);
+        final NodeAudit audit = auditConfig == null
+                ? NodeAudit.NONE
+                : NodeAudit.of(new LoggingAuditLog(log), auditConfig.snapshot());
+
         final DisCasNode node = DisCasNodeFactory.create(
                 cfg.nodeConfig,
                 peerBootstrap,
                 wal,
-                peerState);
+                peerState,
+                audit);
+        if (auditConfig != null) {
+            node.auditSettings(auditConfig.snapshot());
+            auditConfig.addListener(node::auditSettings);
+            toClose.add(auditConfig);
+            System.out.println(DisCasNodeConfig.PROGRAM + ": audit on, "
+                    + auditConfig.snapshot().summary());
+        }
 
         // A state with a window says nothing until it has been true for long enough, and nothing
         // fires while a condition merely persists -- so the register needs a tick of its own. On the

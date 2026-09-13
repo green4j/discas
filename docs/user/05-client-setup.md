@@ -101,6 +101,25 @@ symptom is `serverRejectedHello` on the observer and every request failing, and 
 Authorization is separate and lives on the node: a per-client prefix ACL decides *what* your
 `ClientId` may touch, independently of how you authenticated.
 
+## Describing the client
+
+`ClientId` is the short name grants are written against, which rarely tells a person reading a
+node's audit log which deployment is behind a connection. Pass a `ClientDescription` beside it and
+the node prints both:
+
+```java
+DisCasClient client = DisCasClientFactory.create(
+        ClientId.of("jenkins-euc1-blue"),
+        ClientDescription.of("Jenkins controller euc1-blue, piplex 1.2"),
+        new TcpClientBootstrap(nodes, ClientTransportConfig.defaults()),
+        DisCasClientConfig.defaults());
+```
+
+Optional, at most 255 UTF-8 bytes, and it buys the client nothing: authorization sees the
+`ClientId` alone, so a client describing itself as something else gains no access by it.
+
+---
+
 ## Observability
 
 Everything the client does is reported through `ClientObserver`, whose methods are all no-op

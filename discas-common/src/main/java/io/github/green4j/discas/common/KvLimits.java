@@ -31,6 +31,12 @@ public final class KvLimits {
     /** Maximum {@code client_id} length in UTF-8 bytes (bounds the client message header). */
     public static final int MAX_CLIENT_ID_BYTES = 256;
 
+    /**
+     * Maximum {@code client_description} length in UTF-8 bytes: a length that fits in a single
+     * byte, which is how an audit record prefixes it.
+     */
+    public static final int MAX_CLIENT_DESCRIPTION_BYTES = 255;
+
     /** Maximum {@code cluster_id} length in UTF-8 bytes (bounds the PEER_HELLO payload). */
     public static final int MAX_CLUSTER_ID_BYTES = 256;
 

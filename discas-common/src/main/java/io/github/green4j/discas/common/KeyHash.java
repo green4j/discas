@@ -7,7 +7,10 @@
 
 package io.github.green4j.discas.common;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 /**
  * The cluster's key-to-range partitioning hash: the one implementation both sides of the protocol
@@ -22,26 +25,48 @@ public final class KeyHash {
     private KeyHash() {
     }
 
+    // xxHash-family multipliers.
+    private static final long PRIME_1 = 0x9E3779B185EBCA87L;
+    private static final long PRIME_2 = 0xC2B2AE3D27D4EB4FL;
+    private static final long PRIME_3 = 0x165667B19E3779F9L;
+    private static final long PRIME_5 = 0x27D4EB2F165667C5L;
+
+    /** A fixed byte order, whatever the caller's buffer is in, so architectures cannot disagree. */
+    private static final VarHandle WORD =
+            MethodHandles.byteBufferViewVarHandle(long[].class, ByteOrder.BIG_ENDIAN);
+
     /**
-     * FNV-1a (32-bit) over the buffer's remaining bytes, with a murmur3-style avalanche
-     * finalizer.
+     * A word-at-a-time mix over the buffer's remaining bytes, avalanched down to an int. Reads are
+     * absolute, so the caller's position is not disturbed.
      * <p>
-     * Reads through absolute {@code get(i)} so the caller's position is not disturbed.
+     * <b>Every member and every client must compute the same value.</b> Members that disagree file
+     * a key under different anti-entropy ranges and their digests never match; clients that
+     * disagree send one key to two coordinators. Changing this is a change every process makes at
+     * once.
      */
     public static int distributionHash(final ByteBuffer key) {
         final int from = key.position();
         final int size = key.remaining();
-        int h = 0x811c9dc5; // FNV-1a offset basis
-        for (int i = 0; i < size; i++) {
-            h ^= (key.get(from + i) & 0xff);
-            h *= 0x01000193; // FNV-1a prime
+        long h = PRIME_5 + size * PRIME_2;
+        int i = 0;
+        for (; i + Long.BYTES <= size; i += Long.BYTES) {
+            long word = (long) WORD.get(key, from + i);
+            word *= PRIME_2;
+            word = Long.rotateLeft(word, 31) * PRIME_1;
+            h ^= word;
+            h = Long.rotateLeft(h, 27) * PRIME_1 + PRIME_3;
         }
-        h ^= h >>> 16;
-        h *= 0x85ebca6b;
-        h ^= h >>> 13;
-        h *= 0xc2b2ae35;
-        h ^= h >>> 16;
-        return h;
+        for (; i < size; i++) {
+            h ^= (key.get(from + i) & 0xffL) * PRIME_5;
+            h = Long.rotateLeft(h, 11) * PRIME_1;
+        }
+        // Into the low bits, which is what both callers take a remainder of.
+        h ^= h >>> 33;
+        h *= PRIME_2;
+        h ^= h >>> 29;
+        h *= PRIME_3;
+        h ^= h >>> 32;
+        return (int) h;
     }
 
     /** The range {@code key} falls into, of {@code numRanges}. */

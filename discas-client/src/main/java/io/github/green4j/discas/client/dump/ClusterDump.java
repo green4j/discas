@@ -193,7 +193,7 @@ public final class ClusterDump {
          */
         private boolean dumpedUnderAnEarlierPrefix(final ByteBuffer key, final int prefixIndex) {
             for (int i = 0; i < prefixIndex; i++) {
-                if (startsWith(key, prefixes.get(i))) {
+                if (ByteBuffers.startsWith(key, prefixes.get(i))) {
                     return true;
                 }
             }
@@ -211,17 +211,7 @@ public final class ClusterDump {
         }
     }
 
-    private static boolean startsWith(final ByteBuffer key, final ByteBuffer prefix) {
-        if (key.remaining() < prefix.remaining()) {
-            return false;
-        }
-        for (int i = 0; i < prefix.remaining(); i++) {
-            if (key.get(key.position() + i) != prefix.get(prefix.position() + i)) {
-                return false;
-            }
-        }
-        return true;
-    }
+
 
     private static List<ByteBuffer> copyOf(final List<ByteBuffer> prefixes) {
         if (prefixes == null || prefixes.isEmpty()) {

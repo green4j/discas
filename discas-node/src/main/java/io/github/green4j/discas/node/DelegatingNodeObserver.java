@@ -101,6 +101,11 @@ public abstract class DelegatingNodeObserver implements NodeObserver {
     }
 
     @Override
+    public void auditRecordsDropped(final long records) {
+        delegate.auditRecordsDropped(records);
+    }
+
+    @Override
     public void prepareRejected(final Ballot promised) {
         delegate.prepareRejected(promised);
     }

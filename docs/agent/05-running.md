@@ -44,7 +44,8 @@ that parses to the list already running is reported `unchanged` and not re-appli
 reordering the lines costs nothing. `GET` on this path is a `405`.
 
 `--client-id` (default `agent`) is the identity in the connection handshake, and what the nodes'
-authentication and per-prefix authorization key off. Give each agent its own.
+authentication and per-prefix authorization key off. Give each agent its own. `--client-description`
+is optional free text shown beside that id in a node's audit log, and read by nothing else.
 
 ## The HTTP surface
 

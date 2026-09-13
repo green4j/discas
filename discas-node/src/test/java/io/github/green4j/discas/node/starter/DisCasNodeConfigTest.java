@@ -13,6 +13,7 @@ import io.github.green4j.discas.node.transport.TcpTransportConfig;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -43,6 +44,33 @@ class DisCasNodeConfigTest {
                 "--client-bind", "127.0.0.1:7001",
                 "--wal-dir", "/tmp/discas-1"
         };
+    }
+
+    @Test
+    @DisplayName("The audit file is off by default and its buffer leaves the store's budget alone")
+    void auditIsOffWithoutTheFile() {
+        final DisCasNodeConfig cfg = DisCasNodeConfig.resolve(baseArgs(), Map.of());
+
+        assertNull(cfg.auditConfigFile);
+        assertEquals(0, cfg.nodeConfig.auditBufferBytes());
+        assertEquals(cfg.nodeConfig.heapBudgetBytes(), cfg.nodeConfig.storeCapacityBytes());
+    }
+
+    @Test
+    @DisplayName("With an audit file the ring is taken out of the store's capacity")
+    void auditBufferComesOutOfTheStoreBudget(@TempDir final java.nio.file.Path dir) throws Exception {
+        final java.nio.file.Path file = dir.resolve("audit.properties");
+        java.nio.file.Files.writeString(file, "audit.buffer-bytes = 4096\n");
+
+        final String[] args = new String[baseArgs().length + 2];
+        System.arraycopy(baseArgs(), 0, args, 0, baseArgs().length);
+        args[args.length - 2] = "--audit-config-file";
+        args[args.length - 1] = file.toString();
+
+        final DisCasNodeConfig cfg = DisCasNodeConfig.resolve(args, Map.of());
+        assertEquals(file, cfg.auditConfigFile);
+        assertEquals(4096, cfg.nodeConfig.auditBufferBytes());
+        assertEquals(cfg.nodeConfig.heapBudgetBytes() - 4096, cfg.nodeConfig.storeCapacityBytes());
     }
 
     @Test

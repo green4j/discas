@@ -13,6 +13,7 @@ import io.github.green4j.discas.common.cli.config.ConfigResolver;
 import io.github.green4j.discas.common.cli.config.ConfigSource;
 import io.github.green4j.discas.common.cli.config.ConfigSupport;
 import io.github.green4j.discas.common.client.ClientTransportConfig;
+import io.github.green4j.discas.common.identity.ClientDescription;
 import io.github.green4j.discas.common.identity.ClientId;
 import io.github.green4j.discas.common.identity.NodeId;
 import io.github.green4j.discas.common.observability.ObservabilityConfig;
@@ -70,6 +71,10 @@ public final class DisCasAgentConfig {
     // Identity of this agent's client connection to the cluster.
     public final ClientId clientId;
 
+    // Free text the agent presents about itself at CLIENT_HELLO; null when none was set. Nodes
+    // print it beside the client id in their audit log, and nothing else reads it.
+    public final ClientDescription clientDescription;
+
     // Target nodes this agent connects to (id -> host:port). Populated from either mode; in file
     // mode this is the initial view, replaced whenever the agent is asked to reload.
     public final Map<NodeId, InetSocketAddress> nodes;
@@ -114,6 +119,7 @@ public final class DisCasAgentConfig {
         this.resolver = r;
 
         this.clientId = ClientId.of(r.optional("client-id", DEFAULT_CLIENT_ID));
+        this.clientDescription = ClientDescription.ofNullable(r.optional("client-description"));
 
         // Membership: exactly one of --nodes-file / --nodes.
         final String nodesFileStr = r.optional("nodes-file");
@@ -259,6 +265,9 @@ public final class DisCasAgentConfig {
                                 + "exclusive with --nodes.")).metavar("<path>")
                 .stringOpt("client-id", 'i', ConfigSupport.helpWithEnv("client-id",
                         "This agent's client id [default: " + DEFAULT_CLIENT_ID + "].")).metavar("<id>")
+                .stringOpt("client-description", null, ConfigSupport.helpWithEnv("client-description",
+                        "Free text describing this agent, shown beside its client id in a node's "
+                                + "audit log [default: none].")).metavar("<text>")
                 .stringOpt("token", null, ConfigSupport.helpWithEnv("token",
                         "Client authentication token sent to the nodes [default: none].")).metavar("<secret>")
                 .group("HTTP front-end")

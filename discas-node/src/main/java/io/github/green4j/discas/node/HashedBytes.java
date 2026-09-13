@@ -45,6 +45,9 @@ public final class HashedBytes implements Comparable<HashedBytes> {
      */
     private int hash;
 
+    /** Cached {@link KeyHash#distributionHash}: every accept, purge and index drop asks again. */
+    private int distributionHash;
+
     /**
      * Copies {@code source}'s remaining bytes. The caller keeps ownership of its buffer and may
      * mutate or recycle it afterwards; its position is not disturbed.
@@ -129,22 +132,11 @@ public final class HashedBytes implements Comparable<HashedBytes> {
     /**
      * Whether these bytes begin with {@code prefix}. An empty prefix is a prefix of everything.
      * <p>
-     * Reads through absolute {@code get(i)} so neither buffer's position is disturbed, which is
-     * what lets a scan test every key in a page against one caller-owned prefix buffer without
-     * allocating.
+     * Neither buffer's position is disturbed, which is what lets a scan test every key in a page
+     * against one caller-owned prefix buffer without allocating.
      */
     public boolean startsWith(final ByteBuffer prefix) {
-        final int prefixFrom = prefix.position();
-        final int prefixSize = prefix.remaining();
-        if (prefixSize > size) {
-            return false;
-        }
-        for (int i = 0; i < prefixSize; i++) {
-            if (data.get(i) != prefix.get(prefixFrom + i)) {
-                return false;
-            }
-        }
-        return true;
+        return ByteBuffers.startsWith(data, prefix);
     }
 
     public HashedBytes sha256() {
@@ -159,7 +151,12 @@ public final class HashedBytes implements Comparable<HashedBytes> {
 
     /** The range these bytes fall into, of {@code numRanges}. See {@link KeyHash}. */
     public int rangeOf(final int numRanges) {
-        return KeyHash.rangeOf(data, numRanges);
+        int h = distributionHash;
+        if (h == 0) {
+            h = KeyHash.distributionHash(data);
+            distributionHash = h;
+        }
+        return Integer.remainderUnsigned(h, numRanges);
     }
 
     @Override

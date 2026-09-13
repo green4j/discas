@@ -81,6 +81,12 @@ unbound authorizer is permissive -- that is what preserves the AllowAll contract
 The critical rule: authorization keys off the **authenticated** `ClientId` bound to the connection at
 hello time, never the `senderId` carried in each message, which is self-declared.
 
+`CLIENT_HELLO` is `[int32 version][string clientId][string credential][string description]`. The
+description is optional free text (<= 255 UTF-8 bytes, `ClientDescription`) that buys the client
+nothing -- no grant and no routing reads it. It exists so a node's audit log names something a
+person recognises next to the id a grant is written against; the pair travels as `ClientIdentity`,
+bound to the connection with the authenticated id.
+
 ### Rotation
 
 Everything file-backed reloads through one mechanism (`ReloadableFileSource` registered in the
