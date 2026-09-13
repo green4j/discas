@@ -138,9 +138,11 @@ class WatchUnderPartitionTest {
         final PartitionedTransport transport = new PartitionedTransport(3);
         final DisCasClient c = clientOver(transport);
 
-        // The caller asked to be told within 10s. Three failed polls at ~30ms apart use a tiny
-        // fraction of that budget, so a watch that gives up has discarded almost all of it.
-        final WatchResult result = c.watch(key(), Version.INITIAL, Duration.ofSeconds(10), ReadConsistency.LINEARIZABLE)
+        // The caller asked to be told within 10s. At the floor period a failed poll is followed by
+        // a gap of at most 2.5s, so the three failures and the poll that finds the value fit in
+        // that budget however the draws fall, and a watch that gives up has discarded most of it.
+        final WatchResult result = c.watch(key(), Version.INITIAL, Duration.ofSeconds(10),
+                        ReadConsistency.LINEARIZABLE, DisCasClient.MIN_WATCH_POLL_PERIOD)
                 .get(20, TimeUnit.SECONDS);
 
         assertTrue(result.changed(), "The watch must report the value that appeared after recovery");

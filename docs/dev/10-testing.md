@@ -51,7 +51,8 @@ The chaos suites are a third of the wall time and are soak tests, which is a dif
 **`./gradlew test` passing therefore does not mean the project is green**, and that has cost this
 project once: the chaos suites were red for an unknown stretch while `test` stayed green, because
 nothing else ran them. `verify` is the single definition of everything-checked, and CI (the
-`verify` job in `.github/workflows/build.yml`) runs exactly that.
+`gradle-build` job in `.github/workflows/build.yml`) ends every build with exactly that, on every
+JDK in the matrix.
 
 ## Levels
 

@@ -12,6 +12,7 @@ import io.github.green4j.discas.node.starter.DisCasNodeStarter;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -152,7 +153,8 @@ final class NodeProcess {
     private boolean ready() {
         HttpURLConnection connection = null;
         try {
-            final URL url = new URL("http://127.0.0.1:" + observabilityPort + "/ready");
+            final URL url =
+                    URI.create("http://127.0.0.1:" + observabilityPort + "/ready").toURL();
             connection = (HttpURLConnection) url.openConnection();
             connection.setConnectTimeout(250);
             connection.setReadTimeout(250);

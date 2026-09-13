@@ -57,7 +57,11 @@ class WatchCoordinatorRotationTest {
 
     private static final List<NodeId> MEMBERS =
             List.of(NodeId.of("1"), NodeId.of("2"), NodeId.of("3"));
-    /** Long enough for several polls at the 200-1000 ms watch backoff. */
+    /**
+     * Three polls at the floor period, which is one per member. The gap after a poll is drawn from
+     * {@code [500ms, 2500ms]} and is capped at what is left of the budget, so four seconds cannot
+     * fit fewer than three polls however the draws fall.
+     */
     private static final Duration WATCH_BUDGET = Duration.ofSeconds(4);
 
     private final Map<NodeId, DisCasNode> nodes = new LinkedHashMap<>();
@@ -131,7 +135,8 @@ class WatchCoordinatorRotationTest {
         // Nothing writes during the watch, so it polls until its budget runs out. What it reports
         // is not the point here; where it asked is.
         final WatchResult result = client
-                .watch(key.duplicate(), version, WATCH_BUDGET, ReadConsistency.SERIALIZABLE)
+                .watch(key.duplicate(), version, WATCH_BUDGET, ReadConsistency.SERIALIZABLE,
+                        DisCasClient.MIN_WATCH_POLL_PERIOD)
                 .get(30, TimeUnit.SECONDS);
         assertFalse(result.changed(), "Nothing wrote, so the watch must report the key as quiet");
 
