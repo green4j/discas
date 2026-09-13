@@ -248,6 +248,17 @@ public enum OperatorState {
 
 
     /**
+     * The audit buffer was full and records were lost. The trail has a hole in it, and the hole is
+     * in the trail as a RECORDS_LOST line.
+     */
+    AUDIT_RECORDS_DROPPED(OperatorGroup.CAPACITY,
+            "Raise audit.buffer-bytes in the audit config file, narrow what is recorded "
+                    + "(audit.full.prefixes, audit.hash.algorithm), or give the sink a faster "
+                    + "destination. Records were dropped because the drain could not keep up with "
+                    + "the event loop; set audit.overflow=wait instead if a complete trail is "
+                    + "worth stalling the node for. Rate: discas_node_audit_records_dropped_total."),
+
+    /**
      * An exception the event loop caught and carried on from. One state for every such site,
      * scoped by the component that threw, since they all have the same action.
      */

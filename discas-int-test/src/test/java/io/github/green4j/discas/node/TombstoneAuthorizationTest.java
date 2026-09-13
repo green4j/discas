@@ -13,6 +13,7 @@ import io.github.green4j.discas.common.client.ClientErrorCode;
 import io.github.green4j.discas.common.client.ClientMessage;
 import io.github.green4j.discas.common.client.ResponseSink;
 import io.github.green4j.discas.common.identity.ClientId;
+import io.github.green4j.discas.common.identity.ClientIdentity;
 import io.github.green4j.discas.common.identity.NodeId;
 import io.github.green4j.discas.node.acl.ClientAcl;
 import io.github.green4j.discas.node.acl.ClientAuthorizer;
@@ -53,8 +54,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("ClientHandler -- a null-desired CAS is a delete and needs the DELETE grant")
 class TombstoneAuthorizationTest {
 
-    private static final ClientId UPDATER = ClientId.of("updater");  // CAS, no DELETE
-    private static final ClientId REMOVER = ClientId.of("remover");  // CAS and DELETE
+    private static final ClientIdentity UPDATER = ClientIdentity.of(ClientId.of("updater"));  // CAS, no DELETE
+    private static final ClientIdentity REMOVER = ClientIdentity.of(ClientId.of("remover"));  // CAS and DELETE
     private static final String PREFIX = "app/";
     private static final ByteBuffer KEY =
             ByteBuffer.wrap("app/counter".getBytes(StandardCharsets.UTF_8));
@@ -85,8 +86,8 @@ class TombstoneAuthorizationTest {
                 new CorrelationIdGenerator(self));
 
         final ClientAcl acl = InMemoryClientAcl.builder()
-                .grant(UPDATER, PREFIX, ClientOp.GET, ClientOp.PUT, ClientOp.CAS)
-                .grant(REMOVER, PREFIX, ClientOp.GET, ClientOp.PUT, ClientOp.CAS, ClientOp.DELETE)
+                .grant(UPDATER.id(), PREFIX, ClientOp.GET, ClientOp.PUT, ClientOp.CAS)
+                .grant(REMOVER.id(), PREFIX, ClientOp.GET, ClientOp.PUT, ClientOp.CAS, ClientOp.DELETE)
                 .build();
         final ClientAuthorizer authorizer = new ClientAuthorizer();
         authorizer.bind(acl, loop);

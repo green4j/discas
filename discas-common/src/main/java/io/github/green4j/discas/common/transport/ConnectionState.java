@@ -7,7 +7,7 @@
 
 package io.github.green4j.discas.common.transport;
 
-import io.github.green4j.discas.common.identity.ClientId;
+import io.github.green4j.discas.common.identity.ClientIdentity;
 import io.github.green4j.discas.common.identity.NodeId;
 
 import java.nio.ByteBuffer;
@@ -32,11 +32,11 @@ public final class ConnectionState {
     public NodeId authenticatedPeerId = null;
     /**
      * Trusted client identity bound to this connection once its
-     * {@code TYPE_CLIENT_HELLO} has been authenticated (client server only).
-     * Authorization keys off this value, never off the self-declared
-     * {@code senderId} carried in each client message.
+     * {@code TYPE_CLIENT_HELLO} has been authenticated (client server only), together with the
+     * description the client presented. Authorization keys off its client id, never off the
+     * self-declared {@code senderId} carried in each client message.
      */
-    public ClientId authenticatedClientId = null;
+    public ClientIdentity clientIdentity = ClientIdentity.UNAUTHENTICATED;
     /**
      * True once the side-appropriate HELLO frame has been validated:
      * {@code TYPE_PEER_HELLO} on the peer server, {@code TYPE_CLIENT_HELLO}

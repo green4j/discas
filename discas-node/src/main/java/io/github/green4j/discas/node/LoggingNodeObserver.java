@@ -299,6 +299,13 @@ public class LoggingNodeObserver extends DelegatingNodeObserver {
     }
 
     @Override
+    public void auditRecordsDropped(final long records) {
+        attention.raise(OperatorState.AUDIT_RECORDS_DROPPED, null,
+                records + " audit record(s) were lost to a full buffer");
+        super.auditRecordsDropped(records);
+    }
+
+    @Override
     public void membersReloadRejected(final String reason) {
         attention.raise(OperatorState.MEMBERS_REJECTED, null,
                 "the reloaded member list was refused: " + reason);

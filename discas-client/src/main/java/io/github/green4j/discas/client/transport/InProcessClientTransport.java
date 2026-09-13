@@ -12,7 +12,9 @@ import io.github.green4j.discas.common.EventLoop;
 import io.github.green4j.discas.common.client.ClientMessage;
 import io.github.green4j.discas.common.client.InProcessClientRegistry;
 import io.github.green4j.discas.common.client.ResponseSink;
+import io.github.green4j.discas.common.identity.ClientDescription;
 import io.github.green4j.discas.common.identity.ClientId;
+import io.github.green4j.discas.common.identity.ClientIdentity;
 import io.github.green4j.discas.common.identity.NodeId;
 import io.github.green4j.discas.common.transport.TransportSetupException;
 
@@ -31,15 +33,26 @@ public final class InProcessClientTransport implements ClientTransport {
 
     private final EventLoop clientLoop;
     private final List<NodeId> peers;
-    private final ClientId clientId;
+    private final ClientIdentity identity;
     private Consumer<ClientMessage> responseHandler;
     private volatile boolean closed = false;
 
     public InProcessClientTransport(final EventLoop clientLoop, final List<NodeId> peers,
                                     final ClientId clientId) {
+        this(clientLoop, peers, clientId, null);
+    }
+
+    /**
+     * There is no hello on this path -- nothing is encoded and nothing is authenticated -- so the
+     * identity a node would otherwise learn from a CLIENT_HELLO is assembled here and handed to
+     * the ingress with every request.
+     */
+    public InProcessClientTransport(final EventLoop clientLoop, final List<NodeId> peers,
+                                    final ClientId clientId,
+                                    final ClientDescription description) {
         this.clientLoop = clientLoop;
         this.peers = Collections.unmodifiableList(new ArrayList<>(peers));
-        this.clientId = clientId;
+        this.identity = ClientIdentity.of(clientId, description);
     }
 
     @Override
@@ -63,9 +76,9 @@ public final class InProcessClientTransport implements ClientTransport {
             }
         };
         if (node.loop == clientLoop && clientLoop.inLoop()) {
-            node.clientIngress.accept(clientId, message, replySink);
+            node.clientIngress.accept(identity, message, replySink);
         } else {
-            node.loop.execute(() -> node.clientIngress.accept(clientId, message, replySink));
+            node.loop.execute(() -> node.clientIngress.accept(identity, message, replySink));
         }
     }
 

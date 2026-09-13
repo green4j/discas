@@ -75,8 +75,12 @@ class FaultToleranceTest {
         cluster.transport(2).isolate(1);
         cluster.transport(3).isolate(1);
 
-        // Client 1 is wired through all peers: it may hit node 1 first and fail, then retry on 2/3.
-        cluster.client(1).put(TestBytes.utf8("key"), TestBytes.utf8("majority")).get(10, TimeUnit.SECONDS);
+        // Which peer client 1 asks first is the key's hash. When that is the isolated node the
+        // round times out with the outcome unknown, and re-sending an unfenced write is the
+        // caller's job. Same value either way, so a late first attempt changes no outcome.
+        TestAwait.until("the majority side to accept the write", () ->
+                cluster.client(1).put(TestBytes.utf8("key"), TestBytes.utf8("majority"))
+                        .get(10, TimeUnit.SECONDS));
 
         // A quorum of two is a quorum: the write is not only accepted but readable while the
         // third member is still cut off.

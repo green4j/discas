@@ -1837,14 +1837,14 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             return;
         }
 
-        final int offset = eligibleOffset(entry.routingKey, attempt, now);
+        final int offset = eligibleOffset(entry.routingHash, attempt, now);
         if (offset < 0) {
             // Every coordinator is inside its backoff. Sleep until the earliest one is eligible,
             // or until the caller's deadline, whichever comes first -- the deadline check at the
             // top of this method is then what ends the operation. Re-entering with the same
             // `attempt` is deliberate: eligibleOffset rescans all M peers from there, so whichever
             // backoff expired first is the one picked up.
-            final long untilEligible = nanosUntilAnyPeerEligible(entry.routingKey, attempt, now);
+            final long untilEligible = nanosUntilAnyPeerEligible(entry.routingHash, attempt, now);
             final long untilDeadline = entry.deadlineNanos - now;
             // At least one tick, so a rounding artefact can never turn this into a spin.
             final long wait = Math.max(MIN_BACKOFF_WAIT_NANOS, Math.min(untilEligible, untilDeadline));
@@ -1874,7 +1874,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             }
             // Silence past the per-attempt timeout counts against that coordinator, so the next
             // pass skips it rather than waiting the same five seconds all over again.
-            recordPeerFailure(peerIndex(current.routingKey, scheduledAttempt));
+            recordPeerFailure(peerIndex(current.routingHash, scheduledAttempt));
             if (!mayMoveToAnotherCoordinator(current)) {
                 failIndeterminate(correlationId, current);
                 return;
@@ -1886,7 +1886,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         // the try so a failure there keeps taking the same failover path it always did.
         NodeId targetPeer = null;
         try {
-            targetPeer = peers.get(peerIndex(entry.routingKey, offset));
+            targetPeer = peers.get(peerIndex(entry.routingHash, offset));
             transport.send(targetPeer, entry.request);
             entry.everDispatched = true;
         } catch (final Exception e) {
@@ -1900,7 +1900,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                 entry.timerHandle.cancel();
                 entry.timerHandle = null;
             }
-            recordPeerFailure(peerIndex(entry.routingKey, offset));
+            recordPeerFailure(peerIndex(entry.routingHash, offset));
             sendAttempt(correlationId, entry, offset + 1);
         }
     }
@@ -1910,11 +1910,11 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      * its backoff. Only called when none is eligible now, so every candidate has a future
      * eligibility instant.
      */
-    private long nanosUntilAnyPeerEligible(final ByteBuffer routingKey, final int from,
+    private long nanosUntilAnyPeerEligible(final int routingHash, final int from,
                                            final long now) {
         long soonest = Long.MAX_VALUE;
         for (int i = 0; i < peers.size(); i++) {
-            final int index = peerIndex(routingKey, from + i);
+            final int index = peerIndex(routingHash, from + i);
             final long remaining = peerNextEligibleNanos[index] - now;
             if (remaining < soonest) {
                 soonest = remaining;
@@ -1930,10 +1930,10 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      * is intended: a peer tried and failed is in backoff and therefore skipped, so backoff alone
      * expresses "already tried" and no per-request set is needed.
      */
-    private int eligibleOffset(final ByteBuffer routingKey, final int from, final long now) {
+    private int eligibleOffset(final int routingHash, final int from, final long now) {
         for (int i = 0; i < peers.size(); i++) {
             final int offset = from + i;
-            final int index = peerIndex(routingKey, offset);
+            final int index = peerIndex(routingHash, offset);
             if (peerFailures[index] == 0 || now - peerNextEligibleNanos[index] >= 0) {
                 return offset;
             }
@@ -1961,7 +1961,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         List<Long> affected = null;
         for (final Map.Entry<Long, PendingEntry> e : pending.entrySet()) {
             final PendingEntry entry = e.getValue();
-            if (peerIndex(entry.routingKey, entry.currentAttempt) != index) {
+            if (peerIndex(entry.routingHash, entry.currentAttempt) != index) {
                 continue;
             }
             if (affected == null) {
@@ -2042,14 +2042,13 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      * distributionHash() provides uniform distribution regardless of key
      * length, ensuring balanced load across the cluster
      */
-    private NodeId pickPeer(final ByteBuffer routingKey, final int attempt) {
-        return peers.get(peerIndex(routingKey, attempt));
+    private NodeId pickPeer(final int routingHash, final int attempt) {
+        return peers.get(peerIndex(routingHash, attempt));
     }
 
     /** Where a given attempt offset lands in {@link #peers}, and so in the per-peer health arrays. */
-    private int peerIndex(final ByteBuffer routingKey, final int attempt) {
-        final int hash = KeyHash.distributionHash(routingKey);
-        return Integer.remainderUnsigned(hash + attempt, peers.size());
+    private int peerIndex(final int routingHash, final int attempt) {
+        return Integer.remainderUnsigned(routingHash + attempt, peers.size());
     }
 
     /**
@@ -2133,7 +2132,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
 
     private boolean retryOnNextPeer(final long correlationId, final PendingEntry entry,
                                     final ClientErrorCode code) {
-        final int index = peerIndex(entry.routingKey, entry.currentAttempt);
+        final int index = peerIndex(entry.routingHash, entry.currentAttempt);
         if (!worthAnotherCoordinator(entry, code)) {
             // A definitive answer. Whatever it says about the request, the coordinator itself is
             // healthy and must not be penalised -- a rejected write is not a broken peer.
@@ -2147,7 +2146,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         if (nextAttempt - entry.startAttempt >= peers.size()) {
             return false; // every peer tried; report the last node's verdict
         }
-        observer.requestFailedOver(pickPeer(entry.routingKey, entry.currentAttempt), code);
+        observer.requestFailedOver(pickPeer(entry.routingHash, entry.currentAttempt), code);
         // onResponse already removed the entry; re-arm it before re-dispatching.
         pending.put(correlationId, entry);
         sendAttempt(correlationId, entry, nextAttempt);
@@ -2203,7 +2202,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                 failOrRetry(entry, response.correlationId(), response.errorCode(), response.error());
                 return;
             }
-            recordPeerSuccess(peerIndex(entry.routingKey, entry.currentAttempt));
+            recordPeerSuccess(peerIndex(entry.routingHash, entry.currentAttempt));
             complete(entry, new GetResult(response.value(), new Version(response.version())));
             return;
         }
@@ -2218,7 +2217,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                 failOrRetry(entry, response.correlationId(), response.errorCode(), response.error());
                 return;
             }
-            recordPeerSuccess(peerIndex(entry.routingKey, entry.currentAttempt));
+            recordPeerSuccess(peerIndex(entry.routingHash, entry.currentAttempt));
             complete(entry, new Version(response.version()));
             return;
         }
@@ -2234,7 +2233,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                 failOrRetry(entry, response.correlationId(), response.errorCode(), response.error());
                 return;
             }
-            recordPeerSuccess(peerIndex(entry.routingKey, entry.currentAttempt));
+            recordPeerSuccess(peerIndex(entry.routingHash, entry.currentAttempt));
             complete(entry, new CasResult(response.swapped(),
                     response.value(), new Version(response.version())));
             return;
@@ -2250,7 +2249,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                 failOrRetry(entry, response.correlationId(), response.errorCode(), response.error());
                 return;
             }
-            recordPeerSuccess(peerIndex(entry.routingKey, entry.currentAttempt));
+            recordPeerSuccess(peerIndex(entry.routingHash, entry.currentAttempt));
             complete(entry, new Version(response.version()));
             return;
         }
@@ -2274,6 +2273,8 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         final CompletableFuture<?> future;
         final ClientMessage request;
         final ByteBuffer routingKey;
+        /** Taken once: the walk asks per peer considered, and again on every send and answer. */
+        final int routingHash;
         /**
          * When this operation gives up, whatever coordinators remain. The failover walk is no
          * longer bounded by the peer count, so this is the only thing that ends a request that
@@ -2309,6 +2310,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             this.future = future;
             this.request = request;
             this.routingKey = routingKey;
+            this.routingHash = KeyHash.distributionHash(routingKey);
             this.deadlineNanos = deadlineNanos;
             this.startAttempt = startAttempt;
             this.currentAttempt = startAttempt;

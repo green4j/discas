@@ -13,6 +13,7 @@ import io.github.green4j.discas.common.client.ClientMessageCodec;
 import io.github.green4j.discas.common.client.ClientTransportConfig;
 import io.github.green4j.discas.common.transport.ClientHelloRespCodec;
 import io.github.green4j.discas.common.transport.ClientHelloRespStatus;
+import io.github.green4j.discas.common.identity.ClientDescription;
 import io.github.green4j.discas.common.identity.ClientId;
 
 import io.github.green4j.discas.client.ClientObserver;
@@ -75,6 +76,7 @@ public final class TcpClientTransport implements ClientTransport, EventLoop.IoDr
     private final long slowConsumerTimeoutNanos;
     private final HeapBufferPool rxPool;
     private final ClientId clientId;
+    private final ClientDescription description;
     private final String token;
     private final ClientSecurityProvider securityProvider;
     private final ClientObserver observer;
@@ -128,10 +130,28 @@ public final class TcpClientTransport implements ClientTransport, EventLoop.IoDr
             final String token,
             final ClientSecurityProvider securityProvider,
             final ClientObserver observer) {
+        this(loop, nodeAddresses, config, clientId, null, token, securityProvider, observer);
+    }
+
+    /**
+     * @param description free text this client presents about itself in its CLIENT_HELLO, or
+     *                    {@code null}. It is carried for the node's audit log and nothing else --
+     *                    no grant and no routing decision reads it.
+     */
+    public TcpClientTransport(
+            final EventLoop loop,
+            final Map<NodeId, InetSocketAddress> nodeAddresses,
+            final ClientTransportConfig config,
+            final ClientId clientId,
+            final ClientDescription description,
+            final String token,
+            final ClientSecurityProvider securityProvider,
+            final ClientObserver observer) {
         this.loop = loop;
         this.observer = observer == null ? ClientObserver.NONE : observer;
         this.config = config;
         this.clientId = clientId;
+        this.description = description;
         this.token = token;
         this.securityProvider = securityProvider;
         this.frameCodec = new FrameCodec(config.maxFrameBytes());
@@ -647,7 +667,7 @@ public final class TcpClientTransport implements ClientTransport, EventLoop.IoDr
 
     private void enqueueClientHelloFrame(final ConnectionState connection) {
         final ByteBuffer helloPayload = ClientHello.encode(
-                TransportProtocol.PROTOCOL_VERSION, clientId, token);
+                TransportProtocol.PROTOCOL_VERSION, clientId, token, description);
         final ByteBuffer helloFrame = channelSecurity.get(connection.channel)
                 .wrap(frameCodec.encode(FrameCodec.TYPE_CLIENT_HELLO, helloPayload));
         final int wireBytes = helloFrame.remaining();

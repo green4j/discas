@@ -8,6 +8,7 @@
 package io.github.green4j.discas.client;
 
 import io.github.green4j.discas.common.EventLoop;
+import io.github.green4j.discas.common.identity.ClientDescription;
 import io.github.green4j.discas.common.identity.ClientId;
 import io.github.green4j.discas.common.identity.NodeId;
 import io.github.green4j.discas.client.transport.ClientTransport;
@@ -35,6 +36,10 @@ import java.util.List;
  *   <li>{@link #createInProcess(ClientId, EventLoop, List)} and
  *       {@link #create(ClientId, InProcessClientBootstrap)} -- the whole cluster in this JVM.</li>
  * </ul>
+ * <p>
+ * Each shape has a form taking a {@link ClientDescription} beside the {@link ClientId}: free text
+ * this client presents about itself, which a node prints with the id in its audit log. It is
+ * optional, and the forms without it present none.
  */
 public final class DisCasClientFactory {
     private DisCasClientFactory() {
@@ -46,6 +51,14 @@ public final class DisCasClientFactory {
 
     public static DisCasClient create(final ClientId clientId, final TcpClientBootstrap bootstrap,
                                       final DisCasClientConfig config) {
+        return create(clientId, null, bootstrap, config);
+    }
+
+    /** As {@link #create(ClientId, TcpClientBootstrap, DisCasClientConfig)}, with a description. */
+    public static DisCasClient create(final ClientId clientId,
+                                      final ClientDescription description,
+                                      final TcpClientBootstrap bootstrap,
+                                      final DisCasClientConfig config) {
         // Route loop failures into the observer rather than stderr; ClientObserver.NONE stays
         // silent by choice, and StderrClientObserver prints them.
         final ClientObserver observer = bootstrap.observer;
@@ -55,6 +68,7 @@ public final class DisCasClientFactory {
                 bootstrap.nodeAddresses,
                 bootstrap.clientTransportConfig,
                 clientId,
+                description,
                 bootstrap.token,
                 bootstrap.securityProvider,
                 observer);
@@ -67,12 +81,21 @@ public final class DisCasClientFactory {
 
     public static DisCasClient create(final ClientId clientId, final InProcessClientBootstrap bootstrap,
                                       final DisCasClientConfig config) {
+        return create(clientId, null, bootstrap, config);
+    }
+
+    /** As {@link #create(ClientId, InProcessClientBootstrap, DisCasClientConfig)}, with a description. */
+    public static DisCasClient create(final ClientId clientId,
+                                      final ClientDescription description,
+                                      final InProcessClientBootstrap bootstrap,
+                                      final DisCasClientConfig config) {
         final ClientObserver observer = bootstrap.observer;
         final EventLoop loop = new EventLoop(loopName(clientId), observer::eventLoopTaskFailed);
         final ClientTransport transport = new InProcessClientTransport(
                 loop,
                 bootstrap.peers,
-                clientId);
+                clientId,
+                description);
         return new DisCasClient(clientId, transport, loop, true, observer, config);
     }
 
@@ -100,10 +123,21 @@ public final class DisCasClientFactory {
     public static DisCasClient createColocated(final ClientId clientId,
                                                final ColocatedClientBootstrap bootstrap,
                                                final DisCasClientConfig config) {
+        return createColocated(clientId, null, bootstrap, config);
+    }
+
+    /**
+     * As {@link #createColocated(ClientId, ColocatedClientBootstrap, DisCasClientConfig)}, with a
+     * description.
+     */
+    public static DisCasClient createColocated(final ClientId clientId,
+                                               final ClientDescription description,
+                                               final ColocatedClientBootstrap bootstrap,
+                                               final DisCasClientConfig config) {
         final ClientObserver observer = bootstrap.cluster.observer;
         final EventLoop loop = new EventLoop(loopName(clientId), observer::eventLoopTaskFailed);
-        return new DisCasClient(clientId, colocatedTransport(clientId, bootstrap, loop), loop,
-                true, observer, config);
+        return new DisCasClient(clientId, colocatedTransport(clientId, description, bootstrap, loop),
+                loop, true, observer, config);
     }
 
     /**
@@ -119,11 +153,24 @@ public final class DisCasClientFactory {
                                                final ColocatedClientBootstrap bootstrap,
                                                final EventLoop nodeLoop,
                                                final DisCasClientConfig config) {
-        return new DisCasClient(clientId, colocatedTransport(clientId, bootstrap, nodeLoop),
+        return createColocated(clientId, null, bootstrap, nodeLoop, config);
+    }
+
+    /**
+     * As {@link #createColocated(ClientId, ColocatedClientBootstrap, EventLoop, DisCasClientConfig)},
+     * with a description.
+     */
+    public static DisCasClient createColocated(final ClientId clientId,
+                                               final ClientDescription description,
+                                               final ColocatedClientBootstrap bootstrap,
+                                               final EventLoop nodeLoop,
+                                               final DisCasClientConfig config) {
+        return new DisCasClient(clientId, colocatedTransport(clientId, description, bootstrap, nodeLoop),
                 nodeLoop, false, bootstrap.cluster.observer, config);
     }
 
     private static ClientTransport colocatedTransport(final ClientId clientId,
+                                                      final ClientDescription description,
                                                       final ColocatedClientBootstrap bootstrap,
                                                       final EventLoop loop) {
         final TcpClientBootstrap cluster = bootstrap.cluster;
@@ -133,6 +180,7 @@ public final class DisCasClientFactory {
                 cluster.nodeAddresses,
                 cluster.clientTransportConfig,
                 clientId,
+                description,
                 cluster.token,
                 cluster.securityProvider,
                 cluster.observer);
@@ -165,7 +213,21 @@ public final class DisCasClientFactory {
                                                final List<NodeId> peers,
                                                final ClientObserver observer,
                                                final DisCasClientConfig config) {
-        final ClientTransport transport = new InProcessClientTransport(loop, peers, clientId);
+        return createInProcess(clientId, null, loop, peers, observer, config);
+    }
+
+    /**
+     * As {@link #createInProcess(ClientId, EventLoop, List, ClientObserver, DisCasClientConfig)},
+     * with a description.
+     */
+    public static DisCasClient createInProcess(final ClientId clientId,
+                                               final ClientDescription description,
+                                               final EventLoop loop,
+                                               final List<NodeId> peers,
+                                               final ClientObserver observer,
+                                               final DisCasClientConfig config) {
+        final ClientTransport transport =
+                new InProcessClientTransport(loop, peers, clientId, description);
         return new DisCasClient(clientId, transport, loop, false, observer, config);
     }
 

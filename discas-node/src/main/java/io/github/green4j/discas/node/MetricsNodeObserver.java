@@ -48,6 +48,7 @@ public class MetricsNodeObserver extends DelegatingNodeObserver {
     private final Counter roundsRefusedNoMajority;
     /** Refusals for want of room, split by the two places they can happen. */
     private final Counter writesRefusedNoCapacity;
+    private final Counter auditRecordsDropped;
     private final Counter acceptsRefusedNoCapacity;
     private final Counter preparesRejected;
     private final Counter acceptsRejected;
@@ -115,6 +116,8 @@ public class MetricsNodeObserver extends DelegatingNodeObserver {
                 "Snapshot writes that completed.");
         snapshotsFailed = registry.counter("discas_node_snapshots_failed_total",
                 "Snapshot writes that failed.");
+        auditRecordsDropped = registry.counter("discas_node_audit_records_dropped_total",
+                "Audit records lost because the buffer was full.");
         walDegradations = registry.counter("discas_node_wal_degradations_total",
                 "Times the WAL was marked degraded.");
         eventLoopTaskFailures = registry.counter("discas_node_event_loop_task_failures_total",
@@ -281,6 +284,12 @@ public class MetricsNodeObserver extends DelegatingNodeObserver {
     public void roundFailed(final HashedBytes key, final String reason) {
         roundsFailed.increment();
         super.roundFailed(key, reason);
+    }
+
+    @Override
+    public void auditRecordsDropped(final long records) {
+        auditRecordsDropped.add(records);
+        super.auditRecordsDropped(records);
     }
 
     @Override

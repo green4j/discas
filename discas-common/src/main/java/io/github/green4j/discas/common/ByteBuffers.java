@@ -31,6 +31,36 @@ public final class ByteBuffers {
     private ByteBuffers() {
     }
 
+    /** Below a machine word the loop beats the call into {@link ByteBuffer#mismatch}; measured. */
+    private static final int WORD_BYTES = 8;
+
+    /**
+     * Whether {@code source}'s remaining bytes begin with {@code prefix}'s; an empty prefix is a
+     * prefix of everything. Runs per key on a scan and per grant on every authorization check,
+     * hence two paths: a loop for the short prefixes an ACL is written with, and
+     * {@link ByteBuffer#mismatch} -- a word-at-a-time intrinsic -- from a word up. Neither
+     * allocates, neither disturbs a position.
+     */
+    public static boolean startsWith(final ByteBuffer source, final ByteBuffer prefix) {
+        final int prefixLength = prefix.remaining();
+        if (prefixLength > source.remaining()) {
+            return false;
+        }
+        if (prefixLength < WORD_BYTES) {
+            final int from = source.position();
+            final int prefixFrom = prefix.position();
+            for (int i = 0; i < prefixLength; i++) {
+                if (source.get(from + i) != prefix.get(prefixFrom + i)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        // -1 is "equal as far as both go"; anything short of the prefix length is a real mismatch.
+        final int mismatch = source.mismatch(prefix);
+        return mismatch < 0 || mismatch >= prefixLength;
+    }
+
     /**
      * A read-only view over {@code source}'s remaining bytes. No copy: the result still reflects
      * later writes to {@code source}'s content, and is only appropriate where the producer

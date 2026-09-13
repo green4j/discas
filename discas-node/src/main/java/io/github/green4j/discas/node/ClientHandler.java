@@ -14,10 +14,11 @@ import io.github.green4j.discas.common.client.ClientErrorCode;
 import io.github.green4j.discas.common.client.ClientMessage;
 import io.github.green4j.discas.common.client.ReadConsistency;
 import io.github.green4j.discas.common.client.ResponseSink;
-import io.github.green4j.discas.common.identity.ClientId;
+import io.github.green4j.discas.common.identity.ClientIdentity;
 import io.github.green4j.discas.common.identity.NodeId;
 import io.github.green4j.discas.node.acl.ClientAuthorizer;
 import io.github.green4j.discas.node.acl.ClientOp;
+import io.github.green4j.discas.node.audit.AuditRecorder;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.CompletionException;
@@ -113,6 +114,7 @@ final class ClientHandler {
     private final EventLoop loop;
     private final ClientAuthorizer authorizer;
     private final NodeObserver observer;
+    private final AuditRecorder audit;
     private final Executor asyncCallbacks;
 
     ClientHandler(final NodeId nodeId, final Proposer proposer,
@@ -124,6 +126,14 @@ final class ClientHandler {
     ClientHandler(final NodeId nodeId, final Proposer proposer,
                          final LocalStore store, final EventLoop loop,
                          final ClientAuthorizer authorizer, final NodeObserver observer) {
+        this(nodeId, proposer, store, loop, authorizer, observer, AuditRecorder.NONE);
+    }
+
+    ClientHandler(final NodeId nodeId, final Proposer proposer,
+                         final LocalStore store, final EventLoop loop,
+                         final ClientAuthorizer authorizer, final NodeObserver observer,
+                         final AuditRecorder audit) {
+        this.audit = audit == null ? AuditRecorder.NONE : audit;
         this.senderId = nodeId.value();
         this.proposer = proposer;
         this.store = store;
@@ -133,18 +143,18 @@ final class ClientHandler {
         this.asyncCallbacks = loop.rejectingExecutor();
     }
 
-    public void handleGet(final ClientId clientId,
+    public void handleGet(final ClientIdentity identity,
                           final ClientMessage.ClientGetReq request, final ResponseSink replySink) {
         final String sizeError = sizeError(request.key());
         if (sizeError != null) {
-            replySink.send(new ClientMessage.ClientGetResp(
+            reply(identity, ClientOp.GET, replySink, new ClientMessage.ClientGetResp(
                     senderId, request.correlationId(), false, null, sizeError,
                     ClientErrorCode.INVALID_ARGUMENT));
             return;
         }
         final HashedBytes key = HashedBytes.adopt(request.key());
-        if (!authorizer.allow(clientId, ClientOp.GET, key)) {
-            replySink.send(new ClientMessage.ClientGetResp(
+        if (!authorizer.allow(identity.id(), ClientOp.GET, key)) {
+            reply(identity, ClientOp.GET, replySink, new ClientMessage.ClientGetResp(
                     senderId, request.correlationId(), false, null, ACCESS_DENIED,
                     ClientErrorCode.ACCESS_DENIED));
             return;
@@ -160,7 +170,7 @@ final class ClientHandler {
             }
             final Ballot version = keyState != null ? keyState.accepted : Ballot.ZERO;
             observer.serializableRead(key);
-            replySink.send(new ClientMessage.ClientGetResp(
+            reply(identity, ClientOp.GET, replySink, new ClientMessage.ClientGetResp(
                     senderId, request.correlationId(), true, HashedBytes.toBuffer(value), null,
                     ClientErrorCode.NONE, version));
             return;
@@ -171,7 +181,7 @@ final class ClientHandler {
         // and handleScan below are served from local state and stay available.
         if (!proposer.canReachMajority()) {
             observer.roundRefusedNoMajority(key);
-            replySink.send(new ClientMessage.ClientGetResp(
+            reply(identity, ClientOp.GET, replySink, new ClientMessage.ClientGetResp(
                     senderId, request.correlationId(), false, null, NO_MAJORITY,
                     ClientErrorCode.NO_QUORUM_AT_COORDINATOR));
             return;
@@ -179,7 +189,7 @@ final class ClientHandler {
         try {
             proposer.identityRound(key).whenCompleteAsync((result, error) -> {
                 if (error != null) {
-                    replySink.send(new ClientMessage.ClientGetResp(
+                    reply(identity, ClientOp.GET, replySink, new ClientMessage.ClientGetResp(
                             senderId, request.correlationId(), false, null, error.getMessage(),
                             roundErrorCode(error)));
                 } else {
@@ -187,45 +197,45 @@ final class ClientHandler {
                     if (result.keyExists() && !result.tombstone()) {
                         value = result.value();
                     }
-                    replySink.send(new ClientMessage.ClientGetResp(
+                    reply(identity, ClientOp.GET, replySink, new ClientMessage.ClientGetResp(
                             senderId, request.correlationId(), true, HashedBytes.toBuffer(value),
                             null, ClientErrorCode.NONE, result.version()));
                 }
             }, asyncCallbacks);
         } catch (final Exception e) {
-            replySink.send(new ClientMessage.ClientGetResp(
+            reply(identity, ClientOp.GET, replySink, new ClientMessage.ClientGetResp(
                     senderId, request.correlationId(), false, null,
                     "Internal error: " + e.getMessage(), ClientErrorCode.INTERNAL));
         }
     }
 
-    public void handlePut(final ClientId clientId,
+    public void handlePut(final ClientIdentity identity,
                           final ClientMessage.ClientPutReq request, final ResponseSink replySink) {
         final String sizeError = sizeError(request.key(), request.value());
         if (sizeError != null) {
-            replySink.send(new ClientMessage.ClientPutResp(
+            reply(identity, ClientOp.PUT, replySink, new ClientMessage.ClientPutResp(
                     senderId, request.correlationId(), false, sizeError,
                     ClientErrorCode.INVALID_ARGUMENT));
             return;
         }
         final HashedBytes key = HashedBytes.adopt(request.key());
         final HashedBytes value = HashedBytes.adopt(request.value());
-        if (!authorizer.allow(clientId, ClientOp.PUT, key)) {
-            replySink.send(new ClientMessage.ClientPutResp(
+        if (!authorizer.allow(identity.id(), ClientOp.PUT, key)) {
+            reply(identity, ClientOp.PUT, replySink, new ClientMessage.ClientPutResp(
                     senderId, request.correlationId(), false, ACCESS_DENIED,
                     ClientErrorCode.ACCESS_DENIED));
             return;
         }
         if (!proposer.canReachMajority()) {
             observer.roundRefusedNoMajority(key);
-            replySink.send(new ClientMessage.ClientPutResp(
+            reply(identity, ClientOp.PUT, replySink, new ClientMessage.ClientPutResp(
                     senderId, request.correlationId(), false, NO_MAJORITY,
                     ClientErrorCode.NO_QUORUM_AT_COORDINATOR));
             return;
         }
         if (!store.hasCapacityFor(key, value, false)) {
             observer.writeRefusedNoCapacity(key, true);
-            replySink.send(new ClientMessage.ClientPutResp(
+            reply(identity, ClientOp.PUT, replySink, new ClientMessage.ClientPutResp(
                     senderId, request.correlationId(), false, STORE_FULL,
                     ClientErrorCode.STORE_FULL));
             return;
@@ -233,17 +243,17 @@ final class ClientHandler {
         try {
             proposer.write(key, oldValue -> value).whenCompleteAsync((result, error) -> {
                 if (error != null) {
-                    replySink.send(new ClientMessage.ClientPutResp(
+                    reply(identity, ClientOp.PUT, replySink, new ClientMessage.ClientPutResp(
                             senderId, request.correlationId(), false, error.getMessage(),
                             roundErrorCode(error)));
                 } else {
-                    replySink.send(new ClientMessage.ClientPutResp(
+                    reply(identity, ClientOp.PUT, replySink, new ClientMessage.ClientPutResp(
                             senderId, request.correlationId(), true, null, ClientErrorCode.NONE,
                             result.version()));
                 }
             }, asyncCallbacks);
         } catch (final Exception e) {
-            replySink.send(new ClientMessage.ClientPutResp(
+            reply(identity, ClientOp.PUT, replySink, new ClientMessage.ClientPutResp(
                     senderId, request.correlationId(), false,
                     "Internal error: " + e.getMessage(), ClientErrorCode.INTERNAL));
         }
@@ -258,12 +268,12 @@ final class ClientHandler {
      * recompute without a second round trip -- and what makes this write safe to re-send after a
      * coordinator stops answering.
      */
-    public void handleCas(final ClientId clientId,
+    public void handleCas(final ClientIdentity identity,
                                    final ClientMessage.ClientCasReq request,
                                    final ResponseSink replySink) {
         final String sizeError = sizeError(request.key(), request.desired());
         if (sizeError != null) {
-            replySink.send(new ClientMessage.ClientCasResp(
+            reply(identity, ClientOp.CAS, replySink, new ClientMessage.ClientCasResp(
                     senderId, request.correlationId(), false, false, null, Ballot.ZERO, sizeError,
                     ClientErrorCode.INVALID_ARGUMENT));
             return;
@@ -273,9 +283,9 @@ final class ClientHandler {
         // A null desired commits a tombstone, which is a delete however it is spelled on the
         // wire, so it needs the DELETE grant as well: otherwise a CAS-only grant would remove
         // keys the ACL is written to protect.
-        if (!authorizer.allow(clientId, ClientOp.CAS, key)
-                || (desired == null && !authorizer.allow(clientId, ClientOp.DELETE, key))) {
-            replySink.send(new ClientMessage.ClientCasResp(
+        if (!authorizer.allow(identity.id(), ClientOp.CAS, key)
+                || (desired == null && !authorizer.allow(identity.id(), ClientOp.DELETE, key))) {
+            reply(identity, ClientOp.CAS, replySink, new ClientMessage.ClientCasResp(
                     senderId, request.correlationId(), false, false, null, Ballot.ZERO,
                     ACCESS_DENIED, ClientErrorCode.ACCESS_DENIED));
             return;
@@ -283,7 +293,7 @@ final class ClientHandler {
 
         if (!proposer.canReachMajority()) {
             observer.roundRefusedNoMajority(key);
-            replySink.send(new ClientMessage.ClientCasResp(
+            reply(identity, ClientOp.CAS, replySink, new ClientMessage.ClientCasResp(
                     senderId, request.correlationId(), false, false, null, Ballot.ZERO,
                     NO_MAJORITY, ClientErrorCode.NO_QUORUM_AT_COORDINATOR));
             return;
@@ -292,7 +302,7 @@ final class ClientHandler {
         // cannot shrink when it is full has no way back.
         if (!store.hasCapacityFor(key, desired, desired == null)) {
             observer.writeRefusedNoCapacity(key, true);
-            replySink.send(new ClientMessage.ClientCasResp(
+            reply(identity, ClientOp.CAS, replySink, new ClientMessage.ClientCasResp(
                     senderId, request.correlationId(), false, false, null, Ballot.ZERO,
                     STORE_FULL, ClientErrorCode.STORE_FULL));
             return;
@@ -302,7 +312,7 @@ final class ClientHandler {
             proposer.cas(key, request.expectedVersion(), current -> desired)
                     .whenCompleteAsync((result, error) -> {
                         if (error != null) {
-                            replySink.send(new ClientMessage.ClientCasResp(
+                            reply(identity, ClientOp.CAS, replySink, new ClientMessage.ClientCasResp(
                                     senderId, request.correlationId(), false, false, null,
                                     Ballot.ZERO, error.getMessage(), roundErrorCode(error)));
                             return;
@@ -310,37 +320,37 @@ final class ClientHandler {
 
                         final HashedBytes observed = (result.keyExists() && !result.tombstone())
                                 ? result.value() : null;
-                        replySink.send(new ClientMessage.ClientCasResp(
+                        reply(identity, ClientOp.CAS, replySink, new ClientMessage.ClientCasResp(
                                 senderId, request.correlationId(), true, result.fenceMatched(),
                                 HashedBytes.toBuffer(observed), result.version(), null,
                                 ClientErrorCode.NONE));
                     }, asyncCallbacks);
         } catch (final Exception e) {
-            replySink.send(new ClientMessage.ClientCasResp(
+            reply(identity, ClientOp.CAS, replySink, new ClientMessage.ClientCasResp(
                     senderId, request.correlationId(), false, false, null, Ballot.ZERO,
                     "Internal error: " + e.getMessage(), ClientErrorCode.INTERNAL));
         }
     }
 
-    public void handleDelete(final ClientId clientId,
+    public void handleDelete(final ClientIdentity identity,
                              final ClientMessage.ClientDeleteReq request, final ResponseSink replySink) {
         final String sizeError = sizeError(request.key());
         if (sizeError != null) {
-            replySink.send(new ClientMessage.ClientDeleteResp(
+            reply(identity, ClientOp.DELETE, replySink, new ClientMessage.ClientDeleteResp(
                     senderId, request.correlationId(), false, sizeError,
                     ClientErrorCode.INVALID_ARGUMENT));
             return;
         }
         final HashedBytes key = HashedBytes.adopt(request.key());
-        if (!authorizer.allow(clientId, ClientOp.DELETE, key)) {
-            replySink.send(new ClientMessage.ClientDeleteResp(
+        if (!authorizer.allow(identity.id(), ClientOp.DELETE, key)) {
+            reply(identity, ClientOp.DELETE, replySink, new ClientMessage.ClientDeleteResp(
                     senderId, request.correlationId(), false, ACCESS_DENIED,
                     ClientErrorCode.ACCESS_DENIED));
             return;
         }
         if (!proposer.canReachMajority()) {
             observer.roundRefusedNoMajority(key);
-            replySink.send(new ClientMessage.ClientDeleteResp(
+            reply(identity, ClientOp.DELETE, replySink, new ClientMessage.ClientDeleteResp(
                     senderId, request.correlationId(), false, NO_MAJORITY,
                     ClientErrorCode.NO_QUORUM_AT_COORDINATOR));
             return;
@@ -348,23 +358,23 @@ final class ClientHandler {
         try {
             proposer.write(key, oldValue -> null).whenCompleteAsync((result, error) -> {
                 if (error != null) {
-                    replySink.send(new ClientMessage.ClientDeleteResp(
+                    reply(identity, ClientOp.DELETE, replySink, new ClientMessage.ClientDeleteResp(
                             senderId, request.correlationId(), false, error.getMessage(),
                             roundErrorCode(error)));
                 } else {
-                    replySink.send(new ClientMessage.ClientDeleteResp(
+                    reply(identity, ClientOp.DELETE, replySink, new ClientMessage.ClientDeleteResp(
                             senderId, request.correlationId(), true, null, ClientErrorCode.NONE,
                             result.version()));
                 }
             }, asyncCallbacks);
         } catch (final Exception e) {
-            replySink.send(new ClientMessage.ClientDeleteResp(
+            reply(identity, ClientOp.DELETE, replySink, new ClientMessage.ClientDeleteResp(
                     senderId, request.correlationId(), false,
                     "Internal error: " + e.getMessage(), ClientErrorCode.INTERNAL));
         }
     }
 
-    void handleScan(final ClientId clientId,
+    void handleScan(final ClientIdentity identity,
                            final ClientMessage.ClientScanReq request, final ResponseSink replySink) {
         try {
             // The ACL is applied as the page is filled, not to a finished page: filtering
@@ -373,17 +383,66 @@ final class ClientHandler {
             // stop paginating early.
             final LocalStore.ScanPage page = store.scanLocal(
                     request.prefix(), request.startAfter(), request.limit(),
-                    key -> authorizer.allow(clientId, ClientOp.SCAN, key));
-            replySink.send(new ClientMessage.ClientScanResp(
+                    key -> authorizer.allow(identity.id(), ClientOp.SCAN, key));
+            reply(identity, ClientOp.SCAN, replySink, new ClientMessage.ClientScanResp(
                     senderId, request.correlationId(), page.entries(), page.hasMore()));
         } catch (final Exception e) {
             // Deliberately send NOTHING. An empty ClientScanResp is indistinguishable from
             // "this node holds no keys", so replying on failure would let the client count a
             // failed node towards its scan quorum and silently merge in a phantom empty store.
             // Staying silent makes this node a non-responder, which is exactly what it is; the
-            // client's scan timeout and quorum check then handle it correctly.
+            // client's scan timeout and quorum check then handle it correctly. The trail says so
+            // anyway: a request with no result in it reads as one that was never answered.
             observer.scanFailed(e);
+            audit.requestCompleted(identity, ClientOp.SCAN, request.correlationId(), false,
+                    ClientErrorCode.INTERNAL, null, 0);
         }
+    }
+
+    /**
+     * Sends the response and records how the operation ended. Every reply in this class goes
+     * through here, so a result cannot be forgotten by adding a branch.
+     */
+    private void reply(final ClientIdentity identity, final ClientOp op,
+                       final ResponseSink replySink, final ClientMessage response) {
+        replySink.send(response);
+        if (audit == AuditRecorder.NONE) {
+            return;
+        }
+        recordResult(identity, op, response);
+    }
+
+    private void recordResult(final ClientIdentity identity, final ClientOp op,
+                              final ClientMessage response) {
+        boolean ok = false;
+        ClientErrorCode code = ClientErrorCode.NONE;
+        Ballot version = null;
+        int count = 0;
+        if (response instanceof ClientMessage.ClientGetResp) {
+            final ClientMessage.ClientGetResp get = (ClientMessage.ClientGetResp) response;
+            ok = get.ok();
+            code = get.errorCode();
+            version = get.version();
+        } else if (response instanceof ClientMessage.ClientPutResp) {
+            final ClientMessage.ClientPutResp put = (ClientMessage.ClientPutResp) response;
+            ok = put.ok();
+            code = put.errorCode();
+            version = put.version();
+        } else if (response instanceof ClientMessage.ClientCasResp) {
+            final ClientMessage.ClientCasResp cas = (ClientMessage.ClientCasResp) response;
+            ok = cas.ok();
+            code = cas.errorCode();
+            version = cas.version();
+        } else if (response instanceof ClientMessage.ClientDeleteResp) {
+            final ClientMessage.ClientDeleteResp delete = (ClientMessage.ClientDeleteResp) response;
+            ok = delete.ok();
+            code = delete.errorCode();
+            version = delete.version();
+        } else if (response instanceof ClientMessage.ClientScanResp) {
+            ok = true;
+            count = ((ClientMessage.ClientScanResp) response).entries().size();
+        }
+        audit.requestCompleted(identity, op, response.correlationId(), ok, code, version, count);
     }
 
     /**

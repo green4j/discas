@@ -14,6 +14,7 @@ import io.github.green4j.discas.client.DisCasClientFactory;
 import io.github.green4j.discas.client.transport.TcpClientBootstrap;
 
 import io.github.green4j.discas.common.client.ClientTransportConfig;
+import io.github.green4j.discas.common.identity.ClientDescription;
 import io.github.green4j.discas.common.identity.ClientId;
 import io.github.green4j.discas.common.identity.NodeId;
 import io.github.green4j.discas.common.io.ReloadObserver;
@@ -45,6 +46,7 @@ import java.util.concurrent.atomic.AtomicReference;
 final class ReloadableClient implements AutoCloseable {
 
     private final ClientId clientId;
+    private final ClientDescription clientDescription;
     private final ClientTransportConfig transportConfig;
     private final String token;
     private final ClientSecurityProvider security;
@@ -70,6 +72,7 @@ final class ReloadableClient implements AutoCloseable {
     private volatile boolean closed = false;
 
     ReloadableClient(final ClientId clientId,
+                     final ClientDescription clientDescription,
                      final ClientTransportConfig transportConfig,
                      final String token,
                      final ClientSecurityProvider security,
@@ -82,6 +85,7 @@ final class ReloadableClient implements AutoCloseable {
         this.reloadObserver = reloadObserver == null ? ReloadObserver.NONE : reloadObserver;
         this.clientObserver = clientObserver == null ? ClientObserver.NONE : clientObserver;
         this.clientId = clientId;
+        this.clientDescription = clientDescription;
         this.transportConfig = transportConfig;
         this.token = token;
         this.security = security == null ? PlaintextClientSecurity.PROVIDER : security;
@@ -128,7 +132,7 @@ final class ReloadableClient implements AutoCloseable {
                 nodes, transportConfig, token,
                 security,
                 clientObserver);
-        return DisCasClientFactory.create(clientId, bootstrap, clientConfig);
+        return DisCasClientFactory.create(clientId, clientDescription, bootstrap, clientConfig);
     }
 
     private void retire(final DisCasClient client) {

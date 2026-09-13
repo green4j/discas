@@ -29,6 +29,8 @@ import io.github.green4j.discas.common.client.auth.AllowAllClientAuthenticator;
 import io.github.green4j.discas.common.client.auth.ClientAuthenticator;
 import io.github.green4j.discas.common.client.auth.ClientCredential;
 import io.github.green4j.discas.common.identity.ClientId;
+import io.github.green4j.discas.common.identity.ClientIdentity;
+import io.github.green4j.discas.node.audit.AuditRecorder;
 import io.github.green4j.discas.common.transport.security.ClientChannelSecurity;
 import io.github.green4j.discas.common.transport.security.ClientSecurityProvider;
 import io.github.green4j.discas.common.transport.security.PlaintextClientSecurity;
@@ -82,6 +84,7 @@ public final class TcpClientServerTransport implements EventLoop.IoDriver, AutoC
     private final Map<SocketChannel, ClientChannelSecurity> channelSecurity = new HashMap<>();
     private final Map<SocketChannel, ByteBuffer> netRxBuffers = new HashMap<>();
     private ClientIngress ingress;
+    private AuditRecorder audit = AuditRecorder.NONE;
     private volatile boolean closed = false;
     private long estimatedTransportBytes = 0L;
 
@@ -184,6 +187,11 @@ public final class TcpClientServerTransport implements EventLoop.IoDriver, AutoC
             throw new TransportSetupException(TransportSetupException.Fault.INITIALIZATION_FAILED,
                     "Cannot read the bound address of TcpClientServerTransport", e);
         }
+    }
+
+    /** Where sessions are recorded; {@link AuditRecorder#NONE} when no audit is running. */
+    public void registerAudit(final AuditRecorder recorder) {
+        this.audit = recorder == null ? AuditRecorder.NONE : recorder;
     }
 
     /**
@@ -364,7 +372,7 @@ public final class TcpClientServerTransport implements EventLoop.IoDriver, AutoC
                 final ClientMessage message = ClientMessageCodec.decode(payload);
                 final ClientIngress localIngress = ingress;
                 if (localIngress != null) {
-                    localIngress.accept(connection.authenticatedClientId, message, sinkFor(channel));
+                    localIngress.accept(connection.clientIdentity, message, sinkFor(channel));
                 }
             }
         }
@@ -439,6 +447,8 @@ public final class TcpClientServerTransport implements EventLoop.IoDriver, AutoC
             return;
         }
         if (remoteVersion != TransportProtocol.PROTOCOL_VERSION) {
+            audit.sessionRefused(ClientIdentity.UNAUTHENTICATED,
+                    ClientHelloRespStatus.PROTOCOL_MISMATCH);
             respondToClientAndClose(channel, ClientHelloRespStatus.PROTOCOL_MISMATCH);
             return;
         }
@@ -450,6 +460,7 @@ public final class TcpClientServerTransport implements EventLoop.IoDriver, AutoC
             return;
         }
         if (!withinCapacityBudget(connection)) {
+            audit.sessionRefused(claimed(hello), ClientHelloRespStatus.SERVER_BUSY);
             respondToClientAndClose(channel, ClientHelloRespStatus.SERVER_BUSY);
             return;
         }
@@ -461,6 +472,7 @@ public final class TcpClientServerTransport implements EventLoop.IoDriver, AutoC
             // mTLS: the certificate CN is the authoritative identity; the hello's claimed
             // id must match it (anti-impersonation, cf. the peer SAN-vs-hello cross-check).
             if (!certId.equals(hello.clientId)) {
+                audit.sessionRefused(claimed(hello), ClientHelloRespStatus.ACCESS_DENIED);
                 respondToClientAndClose(channel, ClientHelloRespStatus.ACCESS_DENIED);
                 return;
             }
@@ -470,6 +482,7 @@ public final class TcpClientServerTransport implements EventLoop.IoDriver, AutoC
             final ClientCredential credential =
                     authenticator.authenticate(hello.clientId, hello.credential);
             if (!credential.authenticated()) {
+                audit.sessionRefused(claimed(hello), ClientHelloRespStatus.ACCESS_DENIED);
                 respondToClientAndClose(channel, ClientHelloRespStatus.ACCESS_DENIED);
                 return;
             }
@@ -480,8 +493,9 @@ public final class TcpClientServerTransport implements EventLoop.IoDriver, AutoC
         if (!connections.containsKey(channel)) {
             return;
         }
-        connection.authenticatedClientId = authenticatedId;
+        connection.clientIdentity = ClientIdentity.of(authenticatedId, hello.description);
         connection.helloReceived = true;
+        audit.sessionOpened(connection.clientIdentity);
     }
 
     /**
@@ -647,10 +661,18 @@ public final class TcpClientServerTransport implements EventLoop.IoDriver, AutoC
         rxPool.close();
     }
 
+    /** The identity a hello claimed, which a refusal is the node declining to establish. */
+    private static ClientIdentity claimed(final ClientHello.Decoded hello) {
+        return ClientIdentity.of(hello.clientId, hello.description);
+    }
+
     private void closeChannel(final SocketChannel channel) {
         try {
             final ConnectionState removed = connections.remove(channel);
             if (removed != null) {
+                if (removed.helloReceived) {
+                    audit.sessionClosed(removed.clientIdentity);
+                }
                 estimatedTransportBytes -= removed.estimatedBytes();
                 if (estimatedTransportBytes < 0) {
                     estimatedTransportBytes = 0;

@@ -61,6 +61,7 @@ All three also run from the jars with identical arguments --
 | **Storage** | `--wal-dir`, `--wal-max-file-bytes`, `--snapshot-interval-seconds`, `--snapshot-retention` | `--wal-dir` is required and is one directory per node, never shared |
 | **Runtime** | the timeouts, `--store-heap-fraction`, `--repair-interval-seconds`, `--tombstone-sweep-interval-seconds` | see [Tuning](#tuning) |
 | **Observability** | `--observability-bind`, `--observability-workers`, `--observability-enabled`, and the `--peer-max-*` / `--client-max-*` frame and buffer limits | [6. Monitoring](06-monitoring.md) |
+| **Audit** | `--audit-config-file` | off unless set; the buffer it asks for comes out of `--store-heap-fraction` -- [6. Monitoring](06-monitoring.md#audit) |
 | **Security (TLS/mTLS)** | `--tls`, `--tls-keystore`, `--tls-truststore`, `--tls-cert-rotation` | the **peer** domain |
 | **Security (client access)** | `--client-auth`, `--client-token-file`/`-dir`, `--client-acl-file`, `--client-tls-*` | the **client** domain -- [5. Access](05-access.md) |
 
@@ -87,6 +88,7 @@ Four sources are re-read on request. Everything else takes a restart.
 | Membership | `--members-file` | refused, previous list stays (`MEMBERS_REJECTED`) |
 | Client tokens | `--client-token-file` / `--client-token-dir` | refused, previous stays (`RELOAD_FAILED`) |
 | Client ACL | `--client-acl-file` | refused, previous stays (`RELOAD_FAILED`) |
+| Audit settings | `--audit-config-file` | refused, previous stays; so is a change to `audit.sink` or `audit.buffer-bytes` |
 | TLS key and trust stores | `--tls-*`, `--client-tls-*` with `--*-cert-rotation` | refused, previous material stays |
 
 **A file is read when you ask for it to be read, and at no other time:**

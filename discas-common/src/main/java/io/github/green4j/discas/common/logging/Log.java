@@ -53,6 +53,11 @@ public final class Log {
         write(LogLevel.INFO, infoStream, message, null);
     }
 
+    /** As {@link #info(String)}, for a caller holding a builder it reuses. */
+    public void info(final CharSequence message) {
+        write(LogLevel.INFO, infoStream, message, null);
+    }
+
     /** Writes one ERROR record to {@code stderr}. */
     public void error(final String message) {
         write(LogLevel.ERROR, errorStream, message, null);
@@ -68,7 +73,7 @@ public final class Log {
 
     private void write(final LogLevel level,
                        final PrintStream stream,
-                       final String message,
+                       final CharSequence message,
                        final Throwable error) {
         final Scratch scratch = SCRATCH.get();
         final StringBuilder line = scratch.line;

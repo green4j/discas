@@ -147,7 +147,7 @@ class ReloadableClientSwapTest {
     }
 
     private ReloadableClient newHolder(final Map<NodeId, InetSocketAddress> nodes) {
-        return new ReloadableClient(CLIENT, clientConfig(), null, null, nodes,
+        return new ReloadableClient(CLIENT, null, clientConfig(), null, null, nodes,
                 DisCasClientConfig.defaults(),
                 Executors.newSingleThreadExecutor(r -> new Thread(r, "retire-test")),
                 ReloadObserver.NONE,

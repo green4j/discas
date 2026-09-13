@@ -20,10 +20,18 @@ import io.github.green4j.discas.node.acl.ClientAuthorizer;
 import io.github.green4j.discas.node.observability.HealthSource;
 import io.github.green4j.discas.node.transport.PeerTransport;
 import io.github.green4j.discas.common.client.ClientIngress;
+import io.github.green4j.discas.common.client.ReadConsistency;
 import io.github.green4j.discas.common.client.ClientErrorCode;
 import io.github.green4j.discas.common.client.ClientMessage;
 import io.github.green4j.discas.common.client.ResponseSink;
-import io.github.green4j.discas.common.identity.ClientId;
+import io.github.green4j.discas.common.identity.ClientIdentity;
+import io.github.green4j.discas.node.acl.ClientOp;
+import io.github.green4j.discas.node.audit.AuditConfigSnapshot;
+import io.github.green4j.discas.node.audit.AuditDrain;
+import io.github.green4j.discas.node.audit.AuditRecorder;
+import io.github.green4j.discas.node.audit.AuditRing;
+import io.github.green4j.discas.node.audit.NodeAudit;
+import io.github.green4j.discas.node.audit.RingAuditRecorder;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -59,6 +67,9 @@ public final class DisCasNode implements AutoCloseable {
     private final SnapshotScheduler snapshotScheduler;
     private final Duration repairInterval;
     private final NodeObserver observer;
+    private final AuditRecorder audit;
+    private final RingAuditRecorder ringAudit;
+    private final AuditDrain auditDrain;
     private final List<AutoCloseable> lifecycleCloseables = new ArrayList<>();
 
     // The whole start/restart model, in one field. Written only on the event loop, but read off it
@@ -96,6 +107,20 @@ public final class DisCasNode implements AutoCloseable {
                    final EventLoop loop,
                    final PeerTransport peerTransport,
                    final NodeObserver observer) {
+        this(cfg, wal, loop, peerTransport, observer, NodeAudit.NONE);
+    }
+
+    /**
+     * @param audit where this node records what its clients did. {@link NodeAudit#NONE} allocates
+     *              no ring and starts no thread; anything else must agree with
+     *              {@link NodeConfig#auditBufferBytes()}, which is what the store was sized around.
+     */
+    public DisCasNode(final NodeConfig cfg,
+                   final Wal wal,
+                   final EventLoop loop,
+                   final PeerTransport peerTransport,
+                   final NodeObserver observer,
+                   final NodeAudit audit) {
         // NodeConfig validates its own identity and timing fields; this constructor accepted a
         // null wal, loop or transport and failed later, somewhere else.
         this.cfg = require(cfg, "cfg");
@@ -128,15 +153,45 @@ public final class DisCasNode implements AutoCloseable {
         // What this node tells a peer about its own storage at every handshake, so the peer can
         // check the one thing this node cannot check about itself.
         peerTransport.bindPromiseCeiling(this::promiseCeilingClaim);
+        if (audit == null || !audit.enabled()) {
+            this.ringAudit = null;
+            this.auditDrain = null;
+            this.audit = AuditRecorder.NONE;
+        } else {
+            if (audit.settings().bufferBytes() != cfg.auditBufferBytes()) {
+                throw new IllegalArgumentException("Audit buffer is "
+                        + audit.settings().bufferBytes() + " bytes but the node was sized for "
+                        + cfg.auditBufferBytes() + ": the store's capacity comes out of the same "
+                        + "budget and would be wrong");
+            }
+            final AuditRing ring = new AuditRing(cfg.auditBufferBytes());
+            this.ringAudit = new RingAuditRecorder(ring, audit.settings());
+            this.audit = ringAudit;
+            this.auditDrain = new AuditDrain("discas-audit-" + nodeId.value(), ring, audit.log(),
+                    this.observer::auditRecordsDropped);
+            lifecycleCloseables.add(auditDrain);
+        }
         this.clientAuthorizer = new ClientAuthorizer();
         this.clientHandler = new ClientHandler(
-                nodeId, proposer, store, loop, clientAuthorizer, this.observer);
+                nodeId, proposer, store, loop, clientAuthorizer, this.observer, this.audit);
         this.snapshotScheduler = new SnapshotScheduler();
     }
 
+    /** What the client transport records sessions through; {@link AuditRecorder#NONE} when off. */
+    public AuditRecorder auditRecorder() {
+        return audit;
+    }
+
+    /** Applies reloaded audit settings, on the loop. Ignored when no audit is running. */
+    public void auditSettings(final AuditConfigSnapshot updated) {
+        if (ringAudit != null) {
+            loop.execute(() -> ringAudit.settings(updated));
+        }
+    }
+
     public void registerClientMessages(final Consumer<ClientIngress> registrar) {
-        registrar.accept((clientId, message, replySink) ->
-                loop.execute(() -> dispatchClient(clientId, message, replySink)));
+        registrar.accept((identity, message, replySink) ->
+                loop.execute(() -> dispatchClient(identity, message, replySink)));
     }
 
     /**
@@ -174,6 +229,9 @@ public final class DisCasNode implements AutoCloseable {
                     "Node is closed");
         }
         started = true;
+        if (auditDrain != null) {
+            auditDrain.start();
+        }
         loop.start();
         loop.execute(this::recover);
     }
@@ -467,33 +525,34 @@ public final class DisCasNode implements AutoCloseable {
         }
     }
 
-    private void dispatchClient(final ClientId clientId, final ClientMessage message,
+    private void dispatchClient(final ClientIdentity identity, final ClientMessage message,
                                 final ResponseSink replySink) {
+        recordRequest(identity, message);
         if (state != NodeState.SERVING) {
             observer.requestBeforeReady(false);
-            replyNotReady(message, replySink);
+            replyNotReady(identity, message, replySink);
             return;
         }
 
         if (message instanceof ClientMessage.ClientGetReq) {
-            clientHandler.handleGet(clientId, (ClientMessage.ClientGetReq) message, replySink);
+            clientHandler.handleGet(identity, (ClientMessage.ClientGetReq) message, replySink);
             return;
         }
         if (message instanceof ClientMessage.ClientPutReq) {
-            clientHandler.handlePut(clientId, (ClientMessage.ClientPutReq) message, replySink);
+            clientHandler.handlePut(identity, (ClientMessage.ClientPutReq) message, replySink);
             return;
         }
         if (message instanceof ClientMessage.ClientCasReq) {
             clientHandler.handleCas(
-                    clientId, (ClientMessage.ClientCasReq) message, replySink);
+                    identity, (ClientMessage.ClientCasReq) message, replySink);
             return;
         }
         if (message instanceof ClientMessage.ClientDeleteReq) {
-            clientHandler.handleDelete(clientId, (ClientMessage.ClientDeleteReq) message, replySink);
+            clientHandler.handleDelete(identity, (ClientMessage.ClientDeleteReq) message, replySink);
             return;
         }
         if (message instanceof ClientMessage.ClientScanReq) {
-            clientHandler.handleScan(clientId, (ClientMessage.ClientScanReq) message, replySink);
+            clientHandler.handleScan(identity, (ClientMessage.ClientScanReq) message, replySink);
             return;
         }
     }
@@ -510,7 +569,8 @@ public final class DisCasNode implements AutoCloseable {
      * indistinguishable from "this node holds no keys". Staying silent makes this node a
      * non-responder, which is exactly what the scan quorum check expects.
      */
-    private void replyNotReady(final ClientMessage message, final ResponseSink replySink) {
+    private void replyNotReady(final ClientIdentity identity, final ClientMessage message,
+                               final ResponseSink replySink) {
         final long correlationId = message.correlationId();
         final String reason = "node " + nodeId + " is recovering";
         if (message instanceof ClientMessage.ClientGetReq) {
@@ -528,6 +588,55 @@ public final class DisCasNode implements AutoCloseable {
             replySink.send(new ClientMessage.ClientDeleteResp(
                     nodeId.value(), correlationId, false, reason, ClientErrorCode.NOT_READY));
         }
+        audit.requestCompleted(identity, opOf(message), correlationId, false,
+                ClientErrorCode.NOT_READY, null, 0);
+    }
+
+    /**
+     * The trail's half of a request, taken before the readiness check so a refusal appears as a
+     * request that was answered rather than as nothing at all.
+     */
+    private void recordRequest(final ClientIdentity identity, final ClientMessage message) {
+        if (audit == AuditRecorder.NONE) {
+            return;
+        }
+        if (message instanceof ClientMessage.ClientGetReq) {
+            final ClientMessage.ClientGetReq get = (ClientMessage.ClientGetReq) message;
+            audit.requestReceived(identity, ClientOp.GET, get.correlationId(), get.key(), null, 0,
+                    get.consistency() == ReadConsistency.SERIALIZABLE);
+        } else if (message instanceof ClientMessage.ClientPutReq) {
+            final ClientMessage.ClientPutReq put = (ClientMessage.ClientPutReq) message;
+            audit.requestReceived(identity, ClientOp.PUT, put.correlationId(), put.key(),
+                    put.value(), 0, false);
+        } else if (message instanceof ClientMessage.ClientCasReq) {
+            final ClientMessage.ClientCasReq cas = (ClientMessage.ClientCasReq) message;
+            audit.requestReceived(identity, ClientOp.CAS, cas.correlationId(), cas.key(),
+                    cas.desired(), cas.expectedVersion().counter(), false);
+        } else if (message instanceof ClientMessage.ClientDeleteReq) {
+            final ClientMessage.ClientDeleteReq delete = (ClientMessage.ClientDeleteReq) message;
+            audit.requestReceived(identity, ClientOp.DELETE, delete.correlationId(), delete.key(),
+                    null, 0, false);
+        } else if (message instanceof ClientMessage.ClientScanReq) {
+            final ClientMessage.ClientScanReq scan = (ClientMessage.ClientScanReq) message;
+            audit.requestReceived(identity, ClientOp.SCAN, scan.correlationId(), scan.prefix(),
+                    null, 0, false);
+        }
+    }
+
+    private static ClientOp opOf(final ClientMessage message) {
+        if (message instanceof ClientMessage.ClientGetReq) {
+            return ClientOp.GET;
+        }
+        if (message instanceof ClientMessage.ClientPutReq) {
+            return ClientOp.PUT;
+        }
+        if (message instanceof ClientMessage.ClientCasReq) {
+            return ClientOp.CAS;
+        }
+        if (message instanceof ClientMessage.ClientDeleteReq) {
+            return ClientOp.DELETE;
+        }
+        return ClientOp.SCAN;
     }
 
     private final class SnapshotScheduler {

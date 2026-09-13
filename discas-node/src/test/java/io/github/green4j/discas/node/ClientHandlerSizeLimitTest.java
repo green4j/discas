@@ -13,6 +13,7 @@ import io.github.green4j.discas.common.KvLimits;
 import io.github.green4j.discas.common.client.ClientErrorCode;
 import io.github.green4j.discas.common.client.ClientMessage;
 import io.github.green4j.discas.common.identity.ClientId;
+import io.github.green4j.discas.common.identity.ClientIdentity;
 import io.github.green4j.discas.common.identity.NodeId;
 import io.github.green4j.discas.node.acl.ClientAuthorizer;
 
@@ -34,7 +35,7 @@ class ClientHandlerSizeLimitTest {
             new ClientHandler(NodeId.of("1"), null, null, new EventLoop("size-test"),
                     new ClientAuthorizer());
 
-    private static final ClientId CLIENT = ClientId.of("c");
+    private static final ClientIdentity CLIENT = ClientIdentity.of(ClientId.of("c"));
     private static final ByteBuffer SMALL_KEY = ByteBuffer.wrap(new byte[] {1, 2, 3});
 
     @Test

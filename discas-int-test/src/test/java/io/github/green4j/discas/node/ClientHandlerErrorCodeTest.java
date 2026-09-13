@@ -13,6 +13,7 @@ import io.github.green4j.discas.common.client.ClientErrorCode;
 import io.github.green4j.discas.common.client.ClientMessage;
 import io.github.green4j.discas.common.client.ResponseSink;
 import io.github.green4j.discas.common.identity.ClientId;
+import io.github.green4j.discas.common.identity.ClientIdentity;
 import io.github.green4j.discas.common.identity.NodeId;
 import io.github.green4j.discas.node.acl.ClientAuthorizer;
 import io.github.green4j.discas.node.membership.InMemoryMembers;
@@ -59,7 +60,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("ClientHandler -- unanswered peers are NO_QUORUM_AT_COORDINATOR on every operation")
 class ClientHandlerErrorCodeTest {
 
-    private static final ClientId CLIENT = ClientId.of("c");
+    private static final ClientIdentity CLIENT = ClientIdentity.of(ClientId.of("c"));
     private static final ByteBuffer KEY = ByteBuffer.wrap(new byte[] {1, 2, 3});
     private static final ByteBuffer VALUE = ByteBuffer.wrap(new byte[] {4});
     // A round that never collects a quorum of promises is not retried -- retrying re-asks the same

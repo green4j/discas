@@ -73,11 +73,21 @@ Three versioned surfaces, each refusing what it cannot read rather than misreadi
 | On-disk | `StorageFormat.FORMAT_VERSION`, `LAYOUT_VERSION` | an incompatible file is refused at open |
 | Dump file | `DumpCodec.FORMAT_VERSION` | refused on read |
 
+A fourth surface is agreed rather than versioned: `KeyHash.distributionHash`. Nothing carries it --
+no message, no record on disk -- every process recomputes it, so all of them must compute the same
+thing: members that disagree file a key under different anti-entropy ranges and never match
+digests, clients that disagree send one key to two coordinators. Changing it is a full-cluster,
+all-clients change, but needs no migration -- the range index is rebuilt from the keys on replay.
+
 These numbers distinguish one *released* format from another, so each is bumped on the first
 incompatible change after a release and never before one -- a value above the number of shipped
 formats claims a compatibility history with no migration code behind it. The constants are the
 authority on their own values, which is why none is repeated here: a version written down in two
 places is a version that will disagree with itself.
+
+The `description` field added to `CLIENT_HELLO` did not bump `PROTOCOL_VERSION`: it went in before
+any consumer of 0.0.1 existed, so there was no mixed deployment for the version to protect. A node
+and a client from either side of that change cannot talk to each other.
 
 Wire enums carry an **explicit byte**, never `ordinal()`, so reordering constants cannot change what
 travels. `ClientErrorCode` is the deliberate exception to strictness on the read side: unknown values

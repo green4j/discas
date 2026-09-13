@@ -196,7 +196,8 @@ public final class DisCasAgent implements AutoCloseable {
         try {
             final ClientSecurityProvider security = clientSecurity(cfg, toClose, reload);
             clientHolder = new ReloadableClient(
-                    cfg.clientId, cfg.clientTransportConfig, cfg.token, security, cfg.nodes,
+                    cfg.clientId, cfg.clientDescription, cfg.clientTransportConfig, cfg.token,
+                    security, cfg.nodes,
                     clientConfigFor(cfg.requestTimeout),
                     Executors.newSingleThreadExecutor(
                             r -> new Thread(r, "discas-agent-client-retire")),

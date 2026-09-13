@@ -7,13 +7,14 @@
 
 package io.github.green4j.discas.common.client;
 
-import io.github.green4j.discas.common.identity.ClientId;
+import io.github.green4j.discas.common.identity.ClientIdentity;
 
 /**
  * Node-side entry point for a decoded client message, carrying the <b>trusted</b>
  * client identity bound to the originating connection at CLIENT_HELLO time (never the
  * self-declared {@code senderId} inside the message). The transport that created the
- * accompanying {@link ResponseSink} supplies this identity; authorization keys off it.
+ * accompanying {@link ResponseSink} supplies this identity; authorization keys off its
+ * {@link ClientIdentity#id()}.
  * <p>
  * Lives in {@code common.client} because both the node module (which consumes it) and
  * the in-process client transport (which invokes it) must reach it, and neither may
@@ -23,8 +24,9 @@ import io.github.green4j.discas.common.identity.ClientId;
 public interface ClientIngress {
 
     /**
-     * @param authenticatedClientId the identity authenticated for the connection, or
-     *        {@code null} for an unauthenticated (e.g. AllowAll / in-process) connection
+     * @param identity the identity bound to the connection; never {@code null}, though its
+     *        {@link ClientIdentity#id()} is {@code null} for an unauthenticated (e.g. in-process)
+     *        connection
      */
-    void accept(ClientId authenticatedClientId, ClientMessage message, ResponseSink sink);
+    void accept(ClientIdentity identity, ClientMessage message, ResponseSink sink);
 }

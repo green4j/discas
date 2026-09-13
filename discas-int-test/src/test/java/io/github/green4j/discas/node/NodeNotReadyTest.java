@@ -15,6 +15,7 @@ import io.github.green4j.discas.common.client.ClientErrorCode;
 import io.github.green4j.discas.common.client.ClientIngress;
 import io.github.green4j.discas.common.client.ClientMessage;
 import io.github.green4j.discas.common.identity.ClientId;
+import io.github.green4j.discas.common.identity.ClientIdentity;
 import io.github.green4j.discas.common.identity.NodeId;
 import io.github.green4j.discas.common.identity.ClusterId;
 import io.github.green4j.discas.node.membership.InMemoryMembers;
@@ -92,7 +93,7 @@ class NodeNotReadyTest {
     }
 
     private ClientMessage send(final ClientMessage request) throws Exception {
-        ingress.accept(CLIENT, request, replies::add);
+        ingress.accept(ClientIdentity.of(CLIENT), request, replies::add);
         final ClientMessage reply = replies.poll(5, TimeUnit.SECONDS);
         assertNotNull(reply, "A not-ready node must answer, not stay silent");
         return reply;
@@ -133,7 +134,7 @@ class NodeNotReadyTest {
     @Test
     @DisplayName("SCAN before ready stays silent -- an empty page would look like an empty store")
     void scanStaysSilent() throws Exception {
-        ingress.accept(CLIENT, new ClientMessage.ClientScanReq(
+        ingress.accept(ClientIdentity.of(CLIENT), new ClientMessage.ClientScanReq(
                 CLIENT.value(), 1L, ByteBuffers.EMPTY, null, 10), replies::add);
 
         // ClientScanResp has no error field, so any reply is an *empty page* -- indistinguishable

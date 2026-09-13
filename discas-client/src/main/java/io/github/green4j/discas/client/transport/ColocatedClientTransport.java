@@ -13,6 +13,7 @@ import io.github.green4j.discas.common.EventLoop;
 import io.github.green4j.discas.common.client.ClientMessage;
 import io.github.green4j.discas.common.client.ClientTransportConfig;
 import io.github.green4j.discas.common.client.InProcessClientRegistry;
+import io.github.green4j.discas.common.identity.ClientDescription;
 import io.github.green4j.discas.common.identity.ClientId;
 import io.github.green4j.discas.common.identity.NodeId;
 import io.github.green4j.discas.common.transport.TransportSetupException;
@@ -87,6 +88,25 @@ public final class ColocatedClientTransport implements ClientTransport {
             final String token,
             final ClientSecurityProvider securityProvider,
             final ClientObserver observer) {
+        this(loop, localNodeId, nodeAddresses, config, clientId, null, token, securityProvider,
+                observer);
+    }
+
+    /**
+     * @param description free text this client presents about itself, carried in the CLIENT_HELLO
+     *                    of the {@code N-1} socket hops and handed straight to the ingress on the
+     *                    local one, so a reader of either node's audit log sees the same client
+     */
+    public ColocatedClientTransport(
+            final EventLoop loop,
+            final NodeId localNodeId,
+            final Map<NodeId, InetSocketAddress> nodeAddresses,
+            final ClientTransportConfig config,
+            final ClientId clientId,
+            final ClientDescription description,
+            final String token,
+            final ClientSecurityProvider securityProvider,
+            final ClientObserver observer) {
         if (localNodeId == null) {
             throw new IllegalArgumentException("localNodeId is required");
         }
@@ -106,9 +126,9 @@ public final class ColocatedClientTransport implements ClientTransport {
                             + ": construct the node before the colocated client");
         }
         this.localNodeId = localNodeId;
-        this.local = new InProcessClientTransport(loop, List.of(localNodeId), clientId);
-        this.remote = new TcpClientTransport(loop, nodeAddresses, config, clientId, token,
-                securityProvider, observer);
+        this.local = new InProcessClientTransport(loop, List.of(localNodeId), clientId, description);
+        this.remote = new TcpClientTransport(loop, nodeAddresses, config, clientId, description,
+                token, securityProvider, observer);
     }
 
     /** The member this client lives inside, and the one target that never touches a socket. */

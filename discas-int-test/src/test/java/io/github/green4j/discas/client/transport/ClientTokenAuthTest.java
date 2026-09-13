@@ -77,7 +77,7 @@ class ClientTokenAuthTest {
         loop.start();
         try {
             final FrameCodec frameCodec = new FrameCodec(config.maxFrameBytes());
-            final ByteBuffer hello = ClientHello.encode(protocolVersion, WEB, credential);
+            final ByteBuffer hello = ClientHello.encode(protocolVersion, WEB, credential, null);
             final ByteBuffer wire = frameCodec.encode(FrameCodec.TYPE_CLIENT_HELLO, hello);
 
             try (Socket socket = new Socket("127.0.0.1", server.boundPort())) {
