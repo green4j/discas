@@ -157,6 +157,15 @@ against the number of times a watcher wakes.
 re-accepts the current value at a new ballot, so the version can advance although nothing was
 written. Treat a wake as "look again", not as "something definitely changed".
 
+**A deleted key can be collected, and then it reads as one that was never written.** A delete
+advances the version and wakes the watch like any other commit. Its tombstone is collectable,
+though, and a watch polling across the collection finds the key gone rather than tombstoned: a
+linearizable watch reports that as `changed()` with a null value at `Version.INITIAL`. It is the one
+case in which the version handed back is below the one passed in, and the loop above continues
+correctly on it -- watching from `INITIAL` fires again if the key is recreated. A serializable poll
+cannot tell a collected key from a member that never saw it, so a serializable watch reports the
+collection as unchanged.
+
 **An unchanged answer says whether anything confirmed it.** A poll that fails does not end the
 watch: a quorum outage the cluster recovers from inside the budget should not cost the caller the
 rest of it, so the watch keeps polling and, at the deadline, answers from the newest state any poll

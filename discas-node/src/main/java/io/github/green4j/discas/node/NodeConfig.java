@@ -342,10 +342,6 @@ public final class NodeConfig {
         // no caller waiting on it, so it is paced for a cluster that is mostly not collecting.
         private Duration tombstoneSweepInterval = Duration.ofSeconds(10);
 
-        // How long a tombstone must have been left alone before it is swept. Long enough that
-        // traffic and a repair cycle (10m) have settled, because a check on a key that is about to
-        // be rewritten collects nothing; not a safety margin, so nothing rests on its length.
-
         // The longest a node that started without state waits between ceiling requests; the first
         // ones are far sooner. Short even so: it is holding up its own startup, and answers cost one
         // message each.

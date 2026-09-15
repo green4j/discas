@@ -483,6 +483,15 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      * {@link #watch(ByteBuffer, Version, Duration, ReadConsistency, Duration)} paces one watch
      * itself. Feed the returned {@link WatchResult#version()} back in to continue watching.
      *
+     * <p>A delete is an advance like any other and wakes the watch. Its tombstone is collectable,
+     * though, and a watch that polls across the collection finds the key gone rather than
+     * tombstoned: a {@code LINEARIZABLE} watch reports that as a change at
+     * {@link Version#INITIAL}, the version of a key that holds nothing. This is the one case in
+     * which the version handed back is below the one passed in, and it continues the chain
+     * correctly -- watching from {@code INITIAL} fires when the key is written again. A
+     * {@code SERIALIZABLE} watch cannot tell a collected key from a member that never saw it, so
+     * it reports the collection as unchanged.
+     *
      * <p><b>A {@code SERIALIZABLE} watch rotates over the membership</b>, because a poll answered
      * from one member's local state says nothing about the cluster and asking that member again
      * says it no louder. Successive polls therefore address successive members, and the result
@@ -1629,6 +1638,9 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             if (latest.version().compareTo(since) > 0) {
                 return CompletableFuture.completedFuture(WatchResult.changed(latest));
             }
+            if (registerReset(level, since, observed)) {
+                return CompletableFuture.completedFuture(WatchResult.changed(observed));
+            }
             if (elapsed(deadlineNanos)) {
                 return CompletableFuture.completedFuture(WatchResult.unchanged(latest));
             }
@@ -1637,6 +1649,29 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                             poll + 1, latest),
                     asyncCallbacks);
         }, asyncCallbacks).thenComposeAsync(next -> next, asyncCallbacks);
+    }
+
+    /**
+     * Whether the register the caller is watching is gone rather than merely unchanged.
+     * <p>
+     * A delete tombstones the key and advances its version, and the tombstone is what the watch
+     * above wakes on. A tombstone is also collectable: once no replica can resurrect the value it
+     * suppresses, the cluster purges the key, and the register reads as one that was never written.
+     * A watch polling across that purge sees the version go back to {@link Version#INITIAL} rather
+     * than past its cursor, so the advance it was waiting for is one it can no longer observe --
+     * and {@link #moreRecent} would answer it out of the value it remembers, which is the deleted
+     * one. The reset is the change, so it fires on it, carrying what the poll actually found.
+     * <p>
+     * Only for a linearizable poll, whose prepare quorum intersects the accept quorum of anything
+     * committed: nothing there means nothing is committed. A serializable poll is answered from one
+     * member's local state, where {@link Version#INITIAL} is just as likely to be a member that is
+     * behind or was restarted empty, and firing on that would report a live key as deleted.
+     */
+    private static boolean registerReset(final ReadConsistency level, final Version since,
+                                         final GetResult observed) {
+        return level == ReadConsistency.LINEARIZABLE
+                && since.compareTo(Version.INITIAL) > 0
+                && observed.version().equals(Version.INITIAL);
     }
 
     /** The later of two observations of one key, {@code null} counting as "nothing seen yet". */
