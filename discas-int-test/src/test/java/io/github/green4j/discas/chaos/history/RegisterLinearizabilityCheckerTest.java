@@ -207,4 +207,39 @@ class RegisterLinearizabilityCheckerTest {
                 OpRecord.delete(KEY, v(2), OpRecord.Status.OK, 2, 3),
                 OpRecord.get(KEY, null, Version.INITIAL, OpRecord.Status.OK, 4, 5))));
     }
+
+    /**
+     * The same collection, seen by a write rather than by a read. Deleting a key that is no longer
+     * there commits nothing and answers {@link Version#INITIAL}, which is what a workload that keeps
+     * deleting a key the sweeper keeps collecting produces.
+     */
+    @Test
+    void acceptsADeleteReportingInitialAfterTheTombstoneItWouldWriteWasCollected() {
+        assertTrue(checker.linearizableForKey(List.of(
+                OpRecord.put(KEY, A, v(1), OpRecord.Status.OK, 0, 1),
+                OpRecord.delete(KEY, v(2), OpRecord.Status.OK, 2, 3),
+                OpRecord.delete(KEY, Version.INITIAL, OpRecord.Status.OK, 4, 5),
+                OpRecord.get(KEY, null, Version.INITIAL, OpRecord.Status.OK, 6, 7))));
+    }
+
+    /**
+     * And the write that comes after one. A collected key starts its ballots from the bottom again,
+     * so the next put commits below the version the key had reached with nothing wrong.
+     */
+    @Test
+    void acceptsAWriteCommittingBelowTheVersionACollectedKeyHadReached() {
+        assertTrue(checker.linearizableForKey(List.of(
+                OpRecord.put(KEY, A, v(9), OpRecord.Status.OK, 0, 1),
+                OpRecord.delete(KEY, v(10), OpRecord.Status.OK, 2, 3),
+                OpRecord.put(KEY, B, v(1), OpRecord.Status.OK, 4, 5),
+                OpRecord.get(KEY, B, v(1), OpRecord.Status.OK, 6, 7))));
+    }
+
+    /** The exemption ends with the value: a live register still may not commit backwards. */
+    @Test
+    void rejectsAWriteCommittingBelowAVersionTheRegisterStillHolds() {
+        assertFalse(checker.linearizableForKey(List.of(
+                OpRecord.put(KEY, A, v(9), OpRecord.Status.OK, 0, 1),
+                OpRecord.put(KEY, B, v(1), OpRecord.Status.OK, 2, 3))));
+    }
 }

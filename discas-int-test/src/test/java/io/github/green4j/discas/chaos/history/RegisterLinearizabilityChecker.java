@@ -277,9 +277,16 @@ public final class RegisterLinearizabilityChecker {
      * round finds the state unchanged, short-circuits before the accept phase, and answers with the
      * version that was already in force -- so re-putting the same bytes, or deleting an already
      * tombstoned key, legitimately reports the version its predecessor did.
+     * <p>
+     * Nor below while the register holds no value, which is the same exemption
+     * {@link #readsBackwards} makes on the read side. A tombstone may be collected at any moment,
+     * and collecting it removes the key outright: a delete that lands afterwards answers
+     * {@link Version#INITIAL}, and the first write after one commits at a counter far under what the
+     * key had reached. Only a valueless register can be collected, so that is where the version
+     * stops being evidence of anything.
      */
     private static Apply commit(final OpRecord op, final State model, final HashedBytes value) {
-        if (model.version != null && op.version() != null
+        if (model.value != null && model.version != null && op.version() != null
                 && op.version().compareTo(model.version) < 0) {
             return new Apply(false, model);
         }
