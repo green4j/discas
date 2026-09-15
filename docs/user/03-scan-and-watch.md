@@ -157,6 +157,26 @@ against the number of times a watcher wakes.
 re-accepts the current value at a new ballot, so the version can advance although nothing was
 written. Treat a wake as "look again", not as "something definitely changed".
 
+**An unchanged answer says whether anything confirmed it.** A poll that fails does not end the
+watch: a quorum outage the cluster recovers from inside the budget should not cost the caller the
+rest of it, so the watch keeps polling and, at the deadline, answers from the newest state any poll
+did manage to see. That answer can therefore be a whole poll window old, and `confirmed()` is how
+you tell:
+
+```java
+WatchResult w = client.watch("config/timeout", seen, Duration.ofSeconds(30)).join();
+if (!w.changed() && !w.confirmed()) {
+    // Nothing confirmed this at the deadline; "unchanged" here is not evidence the key is unchanged.
+}
+```
+
+The version is still the one to feed back in, so a loop that only wants to know when to look again
+can ignore it. A caller for which "nothing changed" is itself evidence -- one counting how long it
+has been since it could read the key at all -- should treat `confirmed() == false` as no evidence
+and read again. If no poll succeeds for the whole budget there is no such state to report, and the
+future completes exceptionally instead. A `changed()` answer is always confirmed: it is built from a
+poll that just answered.
+
 **One key at a time.** There is no prefix watch. Watching a set of keys means one polling loop per
 key -- which is fine for a handful of configuration keys and, given the cost above, wrong for
 thousands.

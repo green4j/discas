@@ -2,7 +2,7 @@
 
 This directory contains CI/CD workflows for `discas`:
 
-- `workflows/build.yml` - **Check and Verify**: `clean build` across the JDK matrix, plus `verify`.
+- `workflows/build.yml` - **Check and Verify**: `clean build verify` across the JDK matrix.
 - `workflows/release.yml` - publish artifacts to Sonatype (snapshots and releases), `verify` first.
 
 ## Check and Verify Workflow
@@ -14,27 +14,23 @@ matrix, and `verify`) runs on:
 - `push` to `main`
 - manual trigger (`workflow_dispatch`)
 
-It has two jobs.
-
-**`gradle-build`** - the portability sweep. A Temurin JVM matrix of `11`, `17`, `21` and `25`, each
-with its own Gradle cache, running:
+It has one job, `gradle-build`: a Temurin JVM matrix of `11`, `17`, `21` and `25`, each with its
+own Gradle cache, running:
 
 ```bash
-./gradlew --no-daemon --stacktrace clean build
+./gradlew --no-daemon --stacktrace --continue clean build verify
 ```
 
-**`verify`** - the definition of "green", on the JDK 11 baseline:
+`build` leaves out `@Tag("chaos")` -- the soak and fuzz suites, which answer a different question
+from "did this change break anything" and cost a third of the wall time. `verify` is the whole
+thing: unit, integration, chaos and soak, the asserting examples, and aggregated coverage. Ending
+every build with it puts the soak suites on all four JDKs rather than on the baseline alone, which
+this project commits rarely enough to afford. What "green" means stays in `build.gradle`; a second
+copy in a list of workflow steps is a second place for it to drift, which is why the job names
+Gradle tasks and nothing else.
 
-```bash
-./gradlew --no-daemon --stacktrace verify
-```
-
-The split is what `build` leaves out. It excludes `@Tag("chaos")` - the soak and fuzz suites, which
-answer a different question from "did this change break anything" and cost a third of the wall time
-- so running it four times over is a JDK sweep, not a weaker test run. `verify` is the whole thing:
-unit, integration, chaos and soak, the asserting examples, and aggregated coverage. What it means
-stays in `build.gradle`; a second copy in a list of workflow steps is a second place for it to
-drift, which is why each job here names one Gradle task and nothing else.
+`--continue` so that one failing task does not hide every other one: a red checkstyle run should
+not also cost the test results.
 
 Locally the same axis is `./gradlew testQuick` (chaos included, scaled down) and `./gradlew
 testLong` (the full soak).

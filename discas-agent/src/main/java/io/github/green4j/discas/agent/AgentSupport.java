@@ -47,6 +47,15 @@ final class AgentSupport {
      * compare, and the HTTP surface should not be stingier.
      */
     static final String HEADER_CHANGED = "X-DisCas-Changed";
+    /**
+     * Response header on a blocking query: whether a poll succeeded at the end of the wait, so the
+     * answer is the key's state as of the deadline rather than the newest thing the agent's client
+     * saw before its polls started failing. {@code false} means an unchanged reply nothing confirmed
+     * -- true when it was observed, up to a whole watch window before the deadline. Nothing else on
+     * this surface carries it: a caller counting how long it has been since it could read the key at
+     * all cannot derive it from the version, which is exactly the same either way.
+     */
+    static final String HEADER_CONFIRMED = "X-DisCas-Confirmed";
     /** Response header on a key listing: how many nodes contributed to it. */
     static final String HEADER_RESPONDED = "X-DisCas-Responded";
     /** Response header on a key listing: the cluster size {@code N} the nodes reported. */

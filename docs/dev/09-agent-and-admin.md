@@ -45,7 +45,7 @@ to derive:
 | Client API | Over HTTP |
 |---|---|
 | `GetResult.version()`, `Version` from `put`/`delete`, `CasResult.version()` | `X-DisCas-Version` on **every** read and write, fenced or not, including a `404` |
-| `WatchResult.changed()` | `X-DisCas-Changed` |
+| `WatchResult.changed()` / `confirmed()` | `X-DisCas-Changed` / `X-DisCas-Confirmed` |
 | `ScanPage.quorumReached()` / `respondedNodes()` / `clusterSize()` | `X-DisCas-Complete` / `X-DisCas-Responded` / `X-DisCas-Cluster-Size` |
 | `LockWriteResult.status()` | `status` in the release/renew body, beside the `released`/`renewed` boolean |
 

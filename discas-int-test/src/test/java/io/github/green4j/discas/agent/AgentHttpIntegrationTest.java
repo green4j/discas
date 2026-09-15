@@ -439,7 +439,8 @@ class AgentHttpIntegrationTest {
 
     /**
      * The blocking query states whether it woke or timed out, rather than leaving the caller to
-     * compare cursors -- the same answer {@code WatchResult.changed()} gives in the Java client.
+     * compare cursors -- the same answer {@code WatchResult.changed()} gives in the Java client --
+     * and, on a healthy cluster, that a poll confirmed the answer at the deadline.
      */
     @Test
     @DisplayName("A blocking query says whether it changed")
@@ -459,6 +460,11 @@ class AgentHttpIntegrationTest {
         assertEquals("false", quiet.headers().firstValue("X-DisCas-Changed").orElse(null));
         assertEquals(version(fired), version(quiet),
                 "and the cursor it hands back is the one it was given");
+
+        // Nothing was failing, so the unchanged answer is the state as of the deadline rather than
+        // the newest one a poll saw before the polls stopped answering.
+        assertEquals("true", quiet.headers().firstValue("X-DisCas-Confirmed").orElse(null));
+        assertEquals("true", fired.headers().firstValue("X-DisCas-Confirmed").orElse(null));
     }
 
     /**
