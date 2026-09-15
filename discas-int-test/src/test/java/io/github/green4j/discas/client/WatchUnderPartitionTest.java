@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -117,6 +118,55 @@ class WatchUnderPartitionTest {
         }
     }
 
+    /**
+     * The other way round: the first {@code healthyPolls} reads answer with the key as it stands --
+     * absent, so the watch has nothing to report -- and every later one fails. The watch then reaches
+     * its deadline holding an answer nobody has confirmed since.
+     */
+    private static final class HealthyThenPartitionedTransport implements ClientTransport {
+        private final int healthyPolls;
+        final AtomicInteger polls = new AtomicInteger();
+        private Consumer<ClientMessage> handler;
+
+        HealthyThenPartitionedTransport(final int healthyPolls) {
+            this.healthyPolls = healthyPolls;
+        }
+
+        @Override
+        public void send(final NodeId target, final ClientMessage message) {
+            if (!(message instanceof ClientMessage.ClientGetReq) || handler == null) {
+                return;
+            }
+            final ClientMessage.ClientGetReq req = (ClientMessage.ClientGetReq) message;
+            if (polls.incrementAndGet() <= healthyPolls) {
+                // Committed nothing, so the version stays where the caller is watching from and the
+                // watch keeps going rather than reporting a change.
+                handler.accept(new ClientMessage.ClientGetResp(
+                        target.value(), req.correlationId(), true, null, null,
+                        ClientErrorCode.NONE, Ballot.ZERO));
+                return;
+            }
+            handler.accept(new ClientMessage.ClientGetResp(
+                    target.value(), req.correlationId(), false, null,
+                    "refused", ClientErrorCode.UNAVAILABLE));
+        }
+
+        @Override
+        public void register(final Consumer<ClientMessage> h) {
+            this.handler = h;
+        }
+
+        @Override
+        public List<NodeId> peers() {
+            return PEERS;
+        }
+
+        @Override
+        public int clusterSize() {
+            return PEERS.size();
+        }
+    }
+
     private DisCasClient clientOver(final ClientTransport transport) {
         client = new DisCasClient(CLIENT, transport, new EventLoop("cas-client-watch-test"),
                 true, ClientObserver.NONE, DisCasClientConfig.builder()
@@ -166,6 +216,44 @@ class WatchUnderPartitionTest {
 
         assertTrue(elapsedMs < 10_000, "Must resolve promptly, took " + elapsedMs + "ms");
         assertTrue(transport.polls.get() >= 1);
+    }
+
+    @Test
+    @DisplayName("An unchanged answer nobody could confirm at the deadline says so")
+    void unchangedFromAStaleBestIsNotConfirmed() throws Exception {
+        final HealthyThenPartitionedTransport transport = new HealthyThenPartitionedTransport(1);
+        final DisCasClient c = clientOver(transport);
+
+        // One poll lands and every later one fails, so the watch reaches its deadline with an answer
+        // that is right and old: "it had not changed as of what I saw", where what it saw can be a
+        // whole watch window back. Reported as a success, which it is -- but a caller counting how
+        // long since it last learnt anything about the key must be able to tell.
+        //
+        // A budget of several poll periods rather than one: the branch under test needs the first
+        // poll to answer before the deadline, and on a loaded machine a budget of exactly one
+        // period would make that a race the test could lose against the confirmed branch.
+        final WatchResult result = c.watch(key(), Version.INITIAL, Duration.ofSeconds(3),
+                ReadConsistency.LINEARIZABLE, DisCasClient.MIN_WATCH_POLL_PERIOD)
+                .get(20, TimeUnit.SECONDS);
+
+        assertFalse(result.changed());
+        assertFalse(result.confirmed(), "The last polls failed, so nothing confirmed this at the end");
+        assertTrue(transport.polls.get() > 1, "Saw " + transport.polls.get() + " polls");
+    }
+
+    @Test
+    @DisplayName("A watch that polls a healthy cluster to its deadline is confirmed")
+    void unchangedFromAHealthyPollIsConfirmed() throws Exception {
+        final HealthyThenPartitionedTransport transport =
+                new HealthyThenPartitionedTransport(Integer.MAX_VALUE);
+        final DisCasClient c = clientOver(transport);
+
+        final WatchResult result = c.watch(key(), Version.INITIAL, Duration.ofSeconds(3),
+                ReadConsistency.LINEARIZABLE, DisCasClient.MIN_WATCH_POLL_PERIOD)
+                .get(20, TimeUnit.SECONDS);
+
+        assertFalse(result.changed());
+        assertTrue(result.confirmed(), "A poll succeeded at the deadline, so this is the state then");
     }
 
     @Test

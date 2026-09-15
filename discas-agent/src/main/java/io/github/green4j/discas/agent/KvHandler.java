@@ -54,6 +54,7 @@ final class KvHandler extends AbstractHandler {
 
     private static final HttpHeader VERSION_HEADER = HttpHeader.of(AgentSupport.HEADER_VERSION);
     private static final HttpHeader CHANGED_HEADER = HttpHeader.of(AgentSupport.HEADER_CHANGED);
+    private static final HttpHeader CONFIRMED_HEADER = HttpHeader.of(AgentSupport.HEADER_CONFIRMED);
     private static final HttpHeader COMPLETE_HEADER = HttpHeader.of(AgentSupport.HEADER_COMPLETE);
     private static final HttpHeader RESPONDED_HEADER = HttpHeader.of(AgentSupport.HEADER_RESPONDED);
     private static final HttpHeader CLUSTER_SIZE_HEADER =
@@ -139,7 +140,8 @@ final class KvHandler extends AbstractHandler {
     /**
      * Blocking-query read. Returns the current value together with the {@code X-DisCas-Version} version
      * once the key changes past {@code ?version=} or the (capped) {@code ?wait=} elapses. On an
-     * unchanged reply the version equals the one supplied, so the client detects "no change".
+     * unchanged reply the version equals the one supplied, so the client detects "no change", and
+     * {@code X-DisCas-Confirmed} says whether a poll actually answered at the deadline.
      */
     private void handleWatch(final Connection connection, final HttpRequest request,
                              final String key, final boolean raw,
@@ -151,7 +153,8 @@ final class KvHandler extends AbstractHandler {
                 client.watch(key, since, wait, consistency),
                 (resp, result) -> {
                     resp.header(VERSION_HEADER, encodeVersion(result.version()))
-                            .header(CHANGED_HEADER, result.changed() ? "true" : "false");
+                            .header(CHANGED_HEADER, result.changed() ? "true" : "false")
+                            .header(CONFIRMED_HEADER, result.confirmed() ? "true" : "false");
                     if (result.value() == null) {
                         // Absent or tombstoned: still hand back the version so the caller can long-poll
                         // for a (re)creation by re-issuing with this version.

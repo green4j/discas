@@ -36,7 +36,9 @@ import java.util.concurrent.CompletableFuture;
  *       nothing on the server remembering you.</li>
  *   <li><b>"Nothing changed" is an answer, not a failure.</b> When {@code maxWait} elapses the
  *       future completes normally with {@link WatchResult#changed()} false and the version you
- *       passed in. Re-arm and carry on.</li>
+ *       passed in. Re-arm and carry on -- checking {@link WatchResult#confirmed()} first if you
+ *       are counting how long it has been since you last read the key, since a watch whose polls
+ *       were failing at the deadline answers from the newest state one of them saw.</li>
  * </ul>
  * <p>
  * Deliberately not wired into {@code runAssertingExamples}: scenario 2 is timing-shaped by

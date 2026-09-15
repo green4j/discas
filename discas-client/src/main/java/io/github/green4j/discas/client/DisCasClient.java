@@ -1668,6 +1668,11 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      * down would report a failure the watch does not have. It also keeps the rotation above from
      * making watches flakier: rotating means later polls address members the first one never did,
      * so a member being down is now something a healthy watch can meet.
+     * <p>
+     * That answer is marked {@link WatchResult#confirmed() unconfirmed}, though, because it is up to a
+     * full watch window old and the caller cannot otherwise tell. One that counts how long it has been
+     * since it last read the key needs to know the difference; one that only wants to know when to
+     * look again does not.
      */
     private CompletableFuture<WatchResult> onWatchPollFailed(
             final ByteBuffer key,
@@ -1686,7 +1691,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         if (elapsed(deadlineNanos)) {
             return best == null
                     ? failedWatch(cause)
-                    : CompletableFuture.completedFuture(WatchResult.unchanged(best));
+                    : CompletableFuture.completedFuture(WatchResult.unconfirmed(best));
         }
         return delay(watchPollGap(pollPeriod, deadlineNanos)).thenComposeAsync(ignored ->
                 watchAttempt(key.duplicate(), since, deadlineNanos, level, pollPeriod, poll + 1, best),

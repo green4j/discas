@@ -85,6 +85,25 @@ watch; put something that changes in the value if that is what you meant.
 re-accepts the current value at a new ballot, so the version can advance although nothing was
 written. Treat a wake as "look again", not "something definitely changed".
 
+**An unchanged reply says whether anything confirmed it.** A poll that fails does not end the query
+-- an outage the cluster recovers from inside the budget should not cost the caller the rest of it --
+so a watch can reach its deadline with every recent poll failing and still answer, from the newest
+state a poll did manage to see. That is an unchanged reply nobody confirmed, and
+`X-DisCas-Confirmed: false` is how you tell:
+
+```
+HTTP/1.1 200 OK
+X-DisCas-Version: 31333a32
+X-DisCas-Changed: false
+X-DisCas-Confirmed: false
+```
+
+The version is still the one to feed back in, so a loop that only wants to know when to look again
+can ignore the header. A caller for which "nothing changed" is evidence -- one counting how long it
+has been since it could read the key at all -- should treat `false` as no evidence, because the
+state reported can be a whole poll window old. When the cluster answers nothing for the whole
+budget, there is no such state to report and the query is a [`503`](06-errors.md) instead.
+
 ## Watching for a key that does not exist yet
 
 A miss still carries a version, so you can long-poll for a *creation*:

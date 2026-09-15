@@ -109,8 +109,6 @@ public final class UserDocSnippets {
     private UserDocSnippets() {
     }
 
-    // ---- 01: helpers the other snippets use ---------------------------------------------------
-
     static ByteBuffer utf8(final String s) {
         return ByteBuffer.wrap(s.getBytes(StandardCharsets.UTF_8));
     }
@@ -118,8 +116,6 @@ public final class UserDocSnippets {
     static String str(final ByteBuffer b) {
         return b == null ? null : StandardCharsets.UTF_8.decode(b).toString();
     }
-
-    // ---- 01: getting started -------------------------------------------------------------------
 
     static DisCasClient gettingStarted() {
         final Map<NodeId, InetSocketAddress> nodes = Map.of(
@@ -141,8 +137,6 @@ public final class UserDocSnippets {
         client.close();
         return client;
     }
-
-    // ---- 02: keys and values ---------------------------------------------------------------------
 
     static void reading(final DisCasClient client) {
         final GetResult current = client.get("config/timeout").join();
@@ -218,8 +212,6 @@ public final class UserDocSnippets {
         });
     }
 
-    // ---- 03: scan and watch ---------------------------------------------------------------------
-
     static void scanning(final DisCasClient client) {
         final ScanPage keys = client.scan("service/").join();
         for (final ScanResult r : keys.results()) {
@@ -263,9 +255,12 @@ public final class UserDocSnippets {
         client.watch(utf8("jobs/nightly/state"), cursor, Duration.ofMinutes(5),
                 ReadConsistency.LINEARIZABLE,
                 Duration.ofSeconds(10));
-    }
 
-    // ---- 04: locks -------------------------------------------------------------------------------
+        final WatchResult w = client.watch("config/timeout", cursor, Duration.ofSeconds(30)).join();
+        if (!w.changed() && !w.confirmed()) {
+            w.version();
+        }
+    }
 
     static void takingALock(final DisCasClient client) {
         final LockAcquireResult r =
@@ -314,8 +309,6 @@ public final class UserDocSnippets {
                 break;
         }
     }
-
-    // ---- 05: client setup --------------------------------------------------------------------------
 
     static void transports(final Map<NodeId, InetSocketAddress> nodes) {
         DisCasClientFactory.create(ClientId.of("orders-service"), new TcpClientBootstrap(nodes,
@@ -376,8 +369,6 @@ public final class UserDocSnippets {
         final DisCasClient client = DisCasClientFactory.createInProcess(
                 ClientId.of("embedded"), node.loop(), List.of(NodeId.of("1"), NodeId.of("2")));
     }
-
-    // ---- 06: embedding a node ------------------------------------------------------------------------
 
     static void inProcessCluster(final Wal wal) throws Exception {
         final List<NodeId> nodeIds = List.of(NodeId.of("1"), NodeId.of("2"), NodeId.of("3"));
@@ -450,8 +441,6 @@ public final class UserDocSnippets {
         wal.initialize();
         return wal;
     }
-
-    // ---- 07: a custom starter -------------------------------------------------------------------------
 
     static PeerStateObserver observerChain(final NodeConfig config, final NodeId nodeId,
                                            final int clusterSize,

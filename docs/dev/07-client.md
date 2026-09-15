@@ -101,6 +101,21 @@ no history to replay.
 A benign spurious wake exists: a linearizable read that repairs a lagging quorum re-accepts the
 current value at a new ballot, so the version advances although nothing was written.
 
+**A failed poll does not end the watch, and what that costs is a bit.** A linearizable poll is a
+Paxos round, so a partition fails every one of them; ending the watch on the first failure would
+throw away a budget the cluster may well recover inside, and the caller asked to be told within
+`maxWait`, not to hear about the polling. So the failure is retried, and at the deadline the watch
+answers from `best` -- the highest-versioned answer any poll returned -- rather than failing, unless
+no poll ever succeeded, in which case there is nothing to answer with and the node's own verdict
+propagates. Caller errors and a closed client are excluded from the retry: they fail identically
+forever, so riding them out would turn an immediate answer into a long wait for the same one.
+
+The answer built from a stale `best` is real but can be a whole poll window old, and nothing in the
+value or version distinguishes it from one a poll had just confirmed, so `WatchResult.confirmed()`
+carries that distinction explicitly. `best` only ever travels down the unchanged branches -- a poll
+whose version passes `since` returns `changed` immediately -- so an unconfirmed answer can never be
+a swallowed change, and `changed()` is always confirmed.
+
 **Serializable polls rotate; linearizable ones do not.** Poll *k* of a serializable watch starts its
 coordinator walk at offset *k*, so successive polls address successive members, and the watch keeps
 the highest-versioned answer it has seen and reports that. Both halves are needed and for different
