@@ -243,14 +243,7 @@ public final class TcpClientTransport implements ClientTransport, EventLoop.IoDr
 
     @Override
     public void close() {
-        if (loop.inLoop()) {
-            closeInternal();
-        } else if (loop.isRunning()) {
-            loop.execute(this::closeInternal);
-        }
-        if (!closed) {
-            closeInternal();
-        }
+        loop.executeOnLoopOrHere(this::closeInternal);
     }
 
     @Override

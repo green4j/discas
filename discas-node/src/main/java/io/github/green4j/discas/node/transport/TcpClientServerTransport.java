@@ -248,14 +248,7 @@ public final class TcpClientServerTransport implements EventLoop.IoDriver, AutoC
 
     @Override
     public void close() {
-        if (loop.inLoop()) {
-            closeInternal();
-        } else if (loop.isRunning()) {
-            loop.execute(this::closeInternal);
-        }
-        if (!closed) {
-            closeInternal();
-        }
+        loop.executeOnLoopOrHere(this::closeInternal);
     }
 
     private void onAccept() {

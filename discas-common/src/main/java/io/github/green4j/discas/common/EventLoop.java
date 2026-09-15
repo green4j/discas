@@ -12,9 +12,11 @@ import java.util.List;
 import java.util.PriorityQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 
@@ -113,6 +115,8 @@ public final class EventLoop implements Executor {
      */
     private int insertionsSinceCleanup = 0;
     private static final int CLEANUP_INTERVAL = 64;
+    private static final Duration HANDOFF_TIMEOUT = Duration.ofSeconds(5);
+    private static final long HANDOFF_POLL_MILLIS = 10L;
 
     /**
      * Where a task, timer or drain failure is reported. The loop catches and continues -- one bad
@@ -224,6 +228,46 @@ public final class EventLoop implements Executor {
         if (!running.get()) {
             taskQueue.remove(task);
         }
+    }
+
+    /**
+     * Run {@code task} on the loop thread and wait for it; run it on the calling thread if the
+     * loop cannot.
+     * <p>
+     * This is what an off-loop {@code close()} needs. Loop-confined state must be torn down by the
+     * loop thread while that thread is alive -- tearing it down beside a running loop is a data
+     * race on every structure the loop owns -- and must still be torn down when the loop is gone,
+     * or the sockets stay open.
+     */
+    public void executeOnLoopOrHere(final Runnable task) {
+        if (inLoop() || !running.get()) {
+            task.run();
+            return;
+        }
+        final CountDownLatch done = new CountDownLatch(1);
+        execute(() -> {
+            try {
+                task.run();
+            } finally {
+                done.countDown();
+            }
+        });
+        final long deadline = System.nanoTime() + HANDOFF_TIMEOUT.toNanos();
+        try {
+            while (System.nanoTime() < deadline) {
+                if (done.await(HANDOFF_POLL_MILLIS, TimeUnit.MILLISECONDS)) {
+                    return;
+                }
+                if (!thread.isAlive()) {
+                    // A concurrent shutdown: execute() revokes the task once the loop stops
+                    // accepting, so waiting out the timeout would only delay the fallback.
+                    break;
+                }
+            }
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        task.run();
     }
 
     /**
