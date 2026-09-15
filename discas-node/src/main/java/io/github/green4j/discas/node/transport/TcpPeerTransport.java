@@ -457,14 +457,7 @@ public final class TcpPeerTransport implements PeerTransport, EventLoop.IoDriver
 
     @Override
     public void close() {
-        if (loop.inLoop()) {
-            closeInternal();
-        } else if (loop.isRunning()) {
-            loop.execute(this::closeInternal);
-        }
-        if (!closed) {
-            closeInternal();
-        }
+        loop.executeOnLoopOrHere(this::closeInternal);
     }
 
     @Override
