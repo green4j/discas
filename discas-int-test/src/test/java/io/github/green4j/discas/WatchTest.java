@@ -8,6 +8,7 @@
 package io.github.green4j.discas;
 
 import io.github.green4j.discas.client.DisCasClient;
+import io.github.green4j.discas.client.DisCasClientConfig;
 import io.github.green4j.discas.client.Version;
 import io.github.green4j.discas.client.WatchResult;
 
@@ -42,7 +43,12 @@ class WatchTest {
 
     @BeforeAll
     void setUp() throws Exception {
-        cluster = new TestCluster(3, 1);
+        // Tombstone collection put out of reach of this file: a collected tombstone is a state of
+        // its own, and every test here wants the version a delete commits at to still be there when
+        // the watch polls for it. WatchCollectedKeyTest is where the collection is the subject.
+        cluster = new TestCluster(3, 1,
+                b -> b.tombstoneSweepInterval(Duration.ofHours(1)),
+                DisCasClientConfig.defaults());
         cluster.start();
         cluster.awaitReady();
     }
