@@ -6,10 +6,11 @@
 leader to find and no session to keep -- a request goes to one member, which coordinates the round on
 the caller's behalf, so any reachable member is as good as any other.
 
-Everything returns a `CompletableFuture` and nothing blocks. All I/O and all completion bookkeeping
-happen on a single `EventLoop`, either the client's own or one shared with a co-located node
-(`ownsLoop = false`) -- which is how an embedded deployment avoids a second thread entirely.
-Completions run on that loop, so a dependent stage attached with a non-async `then*` must not block.
+A one-shot operation returns a `CompletableFuture`, a standing watch calls a `WatchListener`, and
+nothing blocks. All I/O and all completion bookkeeping happen on a single `EventLoop`, either the
+client's own or one shared with a co-located node (`ownsLoop = false`) -- which is how an embedded
+deployment avoids a second thread entirely. Completions and listener calls run on that loop, so
+neither they nor a dependent stage attached with a non-async `then*` may block.
 
 ## Routing and failover
 
@@ -134,6 +135,15 @@ The rotation is the only caller of the private `get(key, consistency, startAttem
 it is what `PendingEntry.startAttempt` exists for: the failover walk visits `M` coordinators
 wherever it starts, so `retryOnNextPeer` counts attempts relative to the start rather than against
 `peers.size()` -- an absolute comparison cut a walk that began at offset 2 down to its remainder.
+
+**A standing watch is the same poll without a deadline.** `watch(..., WatchListener)` keeps the
+cursor, `best` and the rotation in a `ListenerWatch` confined to the loop and calls `changed` each
+time the version moves. With no deadline there is no unconfirmed answer to give, so a failed poll is
+simply retried; a caller error or a closed client ends the watch through `failed`. The client keeps
+its standing watches in `activeWatches` and fails them first in `drainPendingOnShutdown`.
+`KeyWatch.close()` marks the watch closed and releases it on the loop -- cancels the timer, drops the
+in-flight `GET` from `pending` and leaves `activeWatches` -- waiting for the loop when called from
+outside it, so no poll is sent and no listener call starts once it returns.
 
 ## Locks
 

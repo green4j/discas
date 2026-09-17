@@ -186,6 +186,22 @@ and read again. If no poll succeeds for the whole budget there is no such state 
 future completes exceptionally instead. A `changed()` answer is always confirmed: it is built from a
 poll that just answered.
 
+**A standing watch calls you instead.** Passing a `WatchListener` runs the loop above inside the
+client, with no deadline:
+
+```java
+KeyWatch watch = client.watch("config/timeout", seen, ReadConsistency.LINEARIZABLE,
+        w -> apply(w.value()));
+// ...
+watch.close();
+```
+
+Everything above holds -- the period, rotation, coalescing, spurious wakes and the collected key --
+except that there is no unchanged answer: a failed poll is just retried. `changed` runs on the
+client's event loop, so it must not block. `failed` is called once, when the watch ends by itself:
+the client was closed, the arguments were refused, or `changed` threw. `close()` works from any
+thread, `changed` included, and once it returns no further call starts.
+
 **One key at a time.** There is no prefix watch. Watching a set of keys means one polling loop per
 key -- which is fine for a handful of configuration keys and, given the cost above, wrong for
 thousands.

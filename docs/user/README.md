@@ -26,9 +26,10 @@ is about operating a cluster; for *why* something behaves the way it does, the
 
 ## Three things to know first
 
-**Everything is asynchronous.** Every operation returns a `CompletableFuture` and nothing blocks.
-Completions run on the client's event loop, so a stage attached with a non-async `then*` must not
-block it -- hop with `thenApplyAsync(fn, yourExecutor)` if you need to.
+**Everything is asynchronous.** A one-shot operation returns a `CompletableFuture`, a standing
+`watch` calls a `WatchListener`, and nothing blocks. Completions and listener calls run on the
+client's event loop, so neither they nor a stage attached with a non-async `then*` may block it --
+hop with `thenApplyAsync(fn, yourExecutor)` if you need to.
 
 **One compare-and-set, and it fences on a version.** There is no value-compared CAS. This is the
 single most important thing about writing to discas safely, and [2](02-key-value.md) is mostly

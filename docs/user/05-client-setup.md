@@ -154,8 +154,8 @@ try (DisCasClient client = DisCasClientFactory.create(clientId, bootstrap)) {
 }
 ```
 
-`close()` fails every in-flight request rather than leaving callers hanging, then shuts down the
-event loop it owns. It throws `ClientLifecycleException` if the loop does not stop within
+`close()` fails every in-flight request and standing watch rather than leaving callers hanging,
+then shuts down the event loop it owns. It throws `ClientLifecycleException` if the loop does not stop within
 `shutdownAwaitTimeout` -- worth knowing, because that throw comes out of a try-with-resources.
 
 **Sharing a loop.** A client co-located with a node can run on the node's loop instead of starting a
