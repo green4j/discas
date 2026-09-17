@@ -61,11 +61,13 @@ import java.util.function.UnaryOperator;
  * therefore invisible to the caller, and a request that runs out of peers fails with
  * {@link RequestFailedException} rather than hanging.
  * <p>
- * Every operation returns a {@link CompletableFuture} and nothing blocks. All I/O and all
- * completion bookkeeping happen on a single {@link EventLoop} thread; the client either owns that
- * loop or shares one supplied by the caller (see the {@code ownsLoop} constructors), which is how
- * a client co-located with a node avoids a second thread entirely. Completions run on the loop,
- * so dependent stages attached with the non-async {@code then*} methods must not block it.
+ * Nothing blocks. A one-shot operation returns a {@link CompletableFuture}; a standing watch
+ * reports to a {@link WatchListener} until its {@link KeyWatch} or the client is closed. All I/O
+ * and all completion bookkeeping happen on a single {@link EventLoop} thread; the client either
+ * owns that loop or shares one supplied by the caller (see the {@code ownsLoop} constructors),
+ * which is how a client co-located with a node avoids a second thread entirely. Completions and
+ * listener calls run on the loop, so neither they nor dependent stages attached with the
+ * non-async {@code then*} methods may block it.
  * <p>
  * Instances are thread-safe and are meant to be long-lived and shared: connection state, the
  * pending-request table and peer rotation all live here. {@link #close()} fails every request
@@ -129,6 +131,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
     private final Map<Long, PendingEntry> pending = new HashMap<>();
     private final Map<Long, PendingScan> pendingScans = new HashMap<>();
     private final Set<CompletableFuture<Void>> pendingDelays = ConcurrentHashMap.newKeySet();
+    private final Set<ListenerWatch> activeWatches = new HashSet<>();
 
     /**
      * Executor used for {@code *Async(..., executor)} callbacks inside this
@@ -350,6 +353,22 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         return watch(encodeStringUtf8(key), sinceVersion, maxWait, consistency, pollPeriod);
     }
 
+    /** UTF-8 string-key form of {@link #watch(ByteBuffer, Version, ReadConsistency, WatchListener)}. */
+    public KeyWatch watch(final String key, final Version sinceVersion,
+                          final ReadConsistency consistency, final WatchListener listener) {
+        return watch(encodeStringUtf8(key), sinceVersion, consistency, listener);
+    }
+
+    /**
+     * UTF-8 string-key form of
+     * {@link #watch(ByteBuffer, Version, ReadConsistency, Duration, WatchListener)}.
+     */
+    public KeyWatch watch(final String key, final Version sinceVersion,
+                          final ReadConsistency consistency, final Duration pollPeriod,
+                          final WatchListener listener) {
+        return watch(encodeStringUtf8(key), sinceVersion, consistency, pollPeriod, listener);
+    }
+
     /** UTF-8 string-key form of {@link #put(ByteBuffer, ByteBuffer)}. */
     public CompletableFuture<Version> put(final String key,
                                           final ByteBuffer value) {
@@ -450,17 +469,24 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
                     future.completeExceptionally(shutdownError());
                     return;
                 }
-                final long correlationId = ++correlationSeq;
-                final ByteBuffer routingKey = ByteBuffers.copyReadOnly(key);
-                final ClientMessage msg =
-                        new ClientMessage.ClientGetReq(clientId.value(), correlationId, routingKey, level);
-                final PendingEntry entry = new PendingEntry(
-                        future, msg, routingKey, deadlineNanosFromNow(requestDeadline), startAttempt);
-                pending.put(correlationId, entry);
-                sendAttempt(correlationId, entry, startAttempt);
+                startGet(key, level, startAttempt, future);
             });
         }
         return future;
+    }
+
+    /** Sends a read on the loop; returns its correlation id. */
+    private long startGet(final ByteBuffer key, final ReadConsistency level, final int startAttempt,
+                          final CompletableFuture<GetResult> future) {
+        final long correlationId = ++correlationSeq;
+        final ByteBuffer routingKey = ByteBuffers.copyReadOnly(key);
+        final ClientMessage msg =
+                new ClientMessage.ClientGetReq(clientId.value(), correlationId, routingKey, level);
+        final PendingEntry entry = new PendingEntry(
+                future, msg, routingKey, deadlineNanosFromNow(requestDeadline), startAttempt);
+        pending.put(correlationId, entry);
+        sendAttempt(correlationId, entry, startAttempt);
+        return correlationId;
     }
 
     public CompletableFuture<WatchResult> watch(final ByteBuffer key, final Version sinceVersion,
@@ -548,6 +574,65 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             return failed;
         }
         return watchWith(key, sinceVersion, maxWait, consistency, pollPeriod);
+    }
+
+    /**
+     * Standing form of {@link #watch(ByteBuffer, Version, Duration, ReadConsistency)}: polls until
+     * closed, telling {@code listener} each time the key advances past the last version reported.
+     * Failed polls are retried; only the failures that end a one-shot watch at once end this one.
+     */
+    public KeyWatch watch(final ByteBuffer key, final Version sinceVersion,
+                          final ReadConsistency consistency, final WatchListener listener) {
+        return watchWith(key, sinceVersion, consistency, watchPollPeriod, listener);
+    }
+
+    /**
+     * As {@link #watch(ByteBuffer, Version, ReadConsistency, WatchListener)}, paced as
+     * {@link #watch(ByteBuffer, Version, Duration, ReadConsistency, Duration)} is.
+     */
+    public KeyWatch watch(final ByteBuffer key, final Version sinceVersion,
+                          final ReadConsistency consistency, final Duration pollPeriod,
+                          final WatchListener listener) {
+        if (pollPeriod == null || pollPeriod.compareTo(MIN_WATCH_POLL_PERIOD) < 0) {
+            return refusedWatch(listener, new IllegalArgumentException(
+                    "pollPeriod must be >= " + MIN_WATCH_POLL_PERIOD.toMillis() + "ms"));
+        }
+        return watchWith(key, sinceVersion, consistency, pollPeriod, listener);
+    }
+
+    private KeyWatch watchWith(final ByteBuffer key, final Version sinceVersion,
+                               final ReadConsistency consistency, final Duration pollPeriod,
+                               final WatchListener listener) {
+        try {
+            checkKeySize(key);
+        } catch (final IllegalArgumentException e) {
+            return refusedWatch(listener, e);
+        }
+        final ListenerWatch watch = new ListenerWatch(ByteBuffers.copyReadOnly(key),
+                sinceVersion == null ? Version.INITIAL : sinceVersion,
+                consistency == null ? ReadConsistency.LINEARIZABLE : consistency, pollPeriod, listener);
+        synchronized (this) {
+            if (closed) {
+                return refusedWatch(listener, new ClientLifecycleException(
+                        ClientLifecycleException.Phase.ALREADY_CLOSED, ERR_CLIENT_SHUT_DOWN));
+            }
+            loop.execute(() -> {
+                if (closed) {
+                    watch.terminate(shutdownError());
+                    return;
+                }
+                if (!watch.closed) {
+                    activeWatches.add(watch);
+                    watch.poll();
+                }
+            });
+        }
+        return watch;
+    }
+
+    private static KeyWatch refusedWatch(final WatchListener listener, final RuntimeException cause) {
+        listener.failed(cause);
+        return () -> { };
     }
 
     private CompletableFuture<WatchResult> watchWith(final ByteBuffer key,
@@ -715,7 +800,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
      * nothing is written. There is no sentinel for "leave it alone", and returning the same bytes
      * is a write like any other.
      *
-     * <p>{@code transform} runs on the client's callback executor, never on the event loop, and
+     * <p>{@code transform} runs on the client's event loop, so it must not block, and
      * may be called more than once. The buffer handed to it is read-only and valid only for the
      * duration of the call; copy anything that has to outlive it.
      *
@@ -1718,9 +1803,7 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             final int poll,
             final GetResult best,
             final Throwable cause) {
-        if (cause instanceof ClientLifecycleException
-                || (cause instanceof DisCasOperationException
-                        && ((DisCasOperationException) cause).isCallerError())) {
+        if (endsWatch(cause)) {
             return failedWatch(cause);
         }
         if (elapsed(deadlineNanos)) {
@@ -1731,6 +1814,12 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
         return delay(watchPollGap(pollPeriod, deadlineNanos)).thenComposeAsync(ignored ->
                 watchAttempt(key.duplicate(), since, deadlineNanos, level, pollPeriod, poll + 1, best),
                 asyncCallbacks);
+    }
+
+    private static boolean endsWatch(final Throwable cause) {
+        return cause instanceof ClientLifecycleException
+                || (cause instanceof DisCasOperationException
+                        && ((DisCasOperationException) cause).isCallerError());
     }
 
     private static CompletableFuture<WatchResult> failedWatch(final Throwable cause) {
@@ -1894,6 +1983,10 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
 
     private void drainPendingOnShutdown() {
         final RuntimeException shutdownError = shutdownError();
+
+        for (final ListenerWatch watch : new ArrayList<>(activeWatches)) {
+            watch.terminate(shutdownError);
+        }
 
         if (!pending.isEmpty()) {
             final List<PendingEntry> entries = new ArrayList<>(pending.values());
@@ -2393,6 +2486,106 @@ public final class DisCasClient implements AutoCloseable, LockClientOps {
             // precedes a scan response on the same connection, so N is known by the time the
             // first scan response lands.
             maybeCompleteScan(response.correlationId(), pendingScan);
+        }
+    }
+
+    /** A standing watch; every field but {@code closed} is loop-confined. */
+    private final class ListenerWatch implements KeyWatch {
+        private final ByteBuffer key;
+        private final ReadConsistency level;
+        private final Duration pollPeriod;
+        private final WatchListener listener;
+        private volatile boolean closed;
+        private Version since;
+        private GetResult best;
+        private int poll;
+        private long inFlightId;
+        private EventLoop.TimerHandle timer;
+
+        ListenerWatch(final ByteBuffer key, final Version since, final ReadConsistency level,
+                      final Duration pollPeriod, final WatchListener listener) {
+            this.key = key;
+            this.since = since;
+            this.level = level;
+            this.pollPeriod = pollPeriod;
+            this.listener = listener;
+        }
+
+        void poll() {
+            if (closed) {
+                return;
+            }
+            final CompletableFuture<GetResult> future = new CompletableFuture<>();
+            inFlightId = startGet(key, level, level == ReadConsistency.SERIALIZABLE ? poll : 0, future);
+            future.whenComplete(this::onPolled);
+        }
+
+        private void onPolled(final GetResult observed, final Throwable error) {
+            inFlightId = 0;
+            if (closed) {
+                return;
+            }
+            if (error != null) {
+                if (endsWatch(unwrap(error))) {
+                    terminate(unwrap(error));
+                    return;
+                }
+            } else {
+                GetResult change = null;
+                best = moreRecent(best, observed);
+                if (best.version().compareTo(since) > 0) {
+                    change = best;
+                } else if (registerReset(level, since, observed)) {
+                    change = observed;
+                    best = observed;
+                }
+                if (change != null) {
+                    since = change.version();
+                    try {
+                        listener.changed(WatchResult.changed(change));
+                    } catch (final RuntimeException e) {
+                        terminate(e);
+                        return;
+                    }
+                    if (closed) {
+                        return;
+                    }
+                }
+            }
+            poll++;
+            timer = loop.schedule(randomBetween(pollPeriod, pollPeriod.multipliedBy(WATCH_POLL_SPREAD)),
+                    this::poll);
+        }
+
+        void terminate(final Throwable cause) {
+            release();
+            try {
+                listener.failed(cause);
+            } catch (final RuntimeException ignored) {
+                // The watch is over either way.
+            }
+        }
+
+        private void release() {
+            closed = true;
+            if (timer != null) {
+                timer.cancel();
+                timer = null;
+            }
+            if (inFlightId != 0) {
+                takePending(inFlightId);
+                inFlightId = 0;
+            }
+            activeWatches.remove(this);
+        }
+
+        @Override
+        public void close() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            loop.executeOnLoopOrHere(this::release);
         }
     }
 

@@ -8,9 +8,13 @@
 package io.github.green4j.discas;
 
 import io.github.green4j.discas.client.DisCasClient;
+import io.github.green4j.discas.client.ClientLifecycleException;
 import io.github.green4j.discas.client.DisCasClientConfig;
+import io.github.green4j.discas.client.KeyWatch;
 import io.github.green4j.discas.client.Version;
+import io.github.green4j.discas.client.WatchListener;
 import io.github.green4j.discas.client.WatchResult;
+import io.github.green4j.discas.common.client.ReadConsistency;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -20,11 +24,14 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Timeout;
 
 import java.time.Duration;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -46,7 +53,7 @@ class WatchTest {
         // Tombstone collection put out of reach of this file: a collected tombstone is a state of
         // its own, and every test here wants the version a delete commits at to still be there when
         // the watch polls for it. WatchCollectedKeyTest is where the collection is the subject.
-        cluster = new TestCluster(3, 1,
+        cluster = new TestCluster(3, 2,
                 b -> b.tombstoneSweepInterval(Duration.ofHours(1)),
                 DisCasClientConfig.defaults());
         cluster.start();
@@ -123,6 +130,59 @@ class WatchTest {
         assertTrue(r.changed(), "A delete advances the version and wakes the watch");
         assertNull(r.value(), "A tombstoned key reports a null value");
         assertTrue(r.version().compareTo(seen) > 0);
+    }
+
+    @Test
+    void standingWatchReportsChangesUntilClosed() throws Exception {
+        final DisCasClient client = cluster.client(0);
+        client.put(TestBytes.utf8("watch-standing"), TestBytes.utf8("v0")).get(5, TimeUnit.SECONDS);
+        final BlockingQueue<WatchResult> seen = new LinkedBlockingQueue<>();
+        final KeyWatch watch = client.watch("watch-standing", settledCursor(client, "watch-standing"),
+                ReadConsistency.LINEARIZABLE, DisCasClient.MIN_WATCH_POLL_PERIOD, seen::add);
+
+        client.put(TestBytes.utf8("watch-standing"), TestBytes.utf8("v1")).get(5, TimeUnit.SECONDS);
+        final WatchResult put = awaitValue(seen, "v1");
+        client.delete(TestBytes.utf8("watch-standing")).get(5, TimeUnit.SECONDS);
+        final WatchResult deleted = awaitValue(seen, null);
+        assertTrue(deleted.version().compareTo(put.version()) > 0);
+
+        watch.close();
+        seen.clear();
+        client.put(TestBytes.utf8("watch-standing"), TestBytes.utf8("v2")).get(5, TimeUnit.SECONDS);
+        assertNull(seen.poll(3, TimeUnit.SECONDS), "A closed watch must report nothing");
+    }
+
+    @Test
+    void closingTheClientEndsStandingWatch() throws Exception {
+        final DisCasClient client = cluster.client(1);
+        final CompletableFuture<Throwable> failure = new CompletableFuture<>();
+        client.watch("watch-client-closed", Version.INITIAL, ReadConsistency.LINEARIZABLE,
+                new WatchListener() {
+                    @Override
+                    public void changed(final WatchResult result) {
+                    }
+
+                    @Override
+                    public void failed(final Throwable cause) {
+                        failure.complete(cause);
+                    }
+                });
+
+        client.close();
+
+        assertInstanceOf(ClientLifecycleException.class, failure.get(5, TimeUnit.SECONDS));
+    }
+
+    /** Skips the benign spurious wakes {@link #settledCursor} describes. */
+    private static WatchResult awaitValue(final BlockingQueue<WatchResult> seen, final String value)
+            throws Exception {
+        while (true) {
+            final WatchResult r = seen.poll(8, TimeUnit.SECONDS);
+            assertTrue(r != null, "No change reported for " + value);
+            if (value == null ? !r.exists() : r.exists() && value.equals(TestBytes.string(r.value()))) {
+                return r;
+            }
+        }
     }
 
     /**
