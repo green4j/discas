@@ -27,6 +27,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -77,6 +78,7 @@ class HttpServerAsyncTest {
     private final class AsyncHandler implements ConnectionHandler {
         final AtomicReference<Connection> lastConnection = new AtomicReference<>();
         final AtomicBoolean mixThrew = new AtomicBoolean();
+        final CountDownLatch mixRecorded = new CountDownLatch(1);
 
         @Override
         public void onOpen(final Connection c) {
@@ -178,6 +180,9 @@ class HttpServerAsyncTest {
                 } catch (final IllegalStateException expected) {
                     mixThrew.set(true);
                 }
+                // commit(200) already put the reply on the wire, so the client can finish the
+                // round-trip before this point; the test waits here before reading mixThrew.
+                mixRecorded.countDown();
             } else if (r.pathEquals("/never")) {
                 // Deferred but never committed (for the reaper test on a short-timeout server).
                 final HttpServer.HttpResponse resp = c.beginResponse(ContentType.TEXT_PLAIN, r.keepAlive());
@@ -283,6 +288,7 @@ class HttpServerAsyncTest {
         final HttpResponse<byte[]> resp = get("/mix");
         assertEquals(200, resp.statusCode());
         assertEquals("mixed", new String(resp.body()));
+        assertTrue(handler.mixRecorded.await(5, TimeUnit.SECONDS), "The handler did not record the outcome");
         assertTrue(handler.mixThrew.get(), "Starting async work on a committed response must throw");
     }
 
