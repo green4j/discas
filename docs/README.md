@@ -73,6 +73,7 @@ cluster that is already serving traffic. Start at
 | Which flag, and does it need a restart? | [7. Configuration](operator/07-configuration.md) |
 | Backups, restores, standing up a cluster | [8. discas-admin](operator/08-admin.md), [9. Backup and recovery](operator/09-backup.md) |
 | Rolling out a new version | [10. Upgrades and restarts](operator/10-upgrade.md) |
+| Running it in a container or on Kubernetes | [16. Containers](operator/16-containers.md) |
 | What does this symptom mean? | [12. Troubleshooting](operator/12-troubleshooting.md) |
 | Give me the procedure, not the argument | [13. Runbooks](operator/13-runbooks.md) |
 | Look up a flag, metric, state or term | [14. Reference](operator/14-reference.md) |

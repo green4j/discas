@@ -33,6 +33,7 @@ New to the system, or arriving from Consul? Start at
 | Follow a procedure under pressure | [13. Runbooks](13-runbooks.md) |
 | Look up a flag, metric, state or term | [14. Reference](14-reference.md) |
 | Issue certificates | [15. PKI recipes](15-pki-recipes.md) |
+| Run it in a container or on Kubernetes | [16. Containers](16-containers.md) |
 
 ## Contents
 
@@ -53,6 +54,7 @@ New to the system, or arriving from Consul? Start at
 | [13. Runbooks](13-runbooks.md) | RB-01 ... RB-15, in one shape |
 | [14. Reference](14-reference.md) | flags, ports, metrics, states, error codes, glossary |
 | [15. PKI recipes](15-pki-recipes.md) | keytool, openssl, cert-manager, Vault, ACM PCA |
+| [16. Containers](16-containers.md) | the image, the binds it changes, volumes, probes, debugging |
 
 **2 to 5 are the centre of this guide.** Everything else serves them: monitoring tells you when to
 open one, configuration is how you change what they describe, and the runbooks are what you do at

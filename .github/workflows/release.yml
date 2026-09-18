@@ -11,6 +11,9 @@ on:
         options:
           - snapshot
           - release
+          # Back-fills the container image onto a version already on Central. Releases from here on
+          # publish both in `release` mode, so this is for versions cut before the image existed.
+          - image
   push:
     tags:
       - "v*"
@@ -24,7 +27,7 @@ permissions:
 
 jobs:
   publish:
-    name: Publish to Sonatype
+    name: Publish
     runs-on: ubuntu-latest
     # `verify` runs inside this job: the full suite, then the upload.
     timeout-minutes: 90
@@ -58,6 +61,8 @@ jobs:
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
           SIGNING_GPG_SECRET_KEY: ${{ secrets.SIGNING_GPG_SECRET_KEY }}
           SIGNING_GPG_PASSWORD: ${{ secrets.SIGNING_GPG_PASSWORD }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           version="$(tr -d '[:space:]' < version.txt)"
           if [[ -z "${version}" ]]; then
@@ -65,9 +70,12 @@ jobs:
             exit 1
           fi
 
-          if [[ -z "${SONATYPE_USERNAME}" || -z "${SONATYPE_PASSWORD}" ]]; then
-            echo "Missing SONATYPE_USERNAME or SONATYPE_PASSWORD secret"
-            exit 1
+          # Sonatype is not involved in image mode: nothing is uploaded to Central there.
+          if [[ "${PUBLISH_MODE}" != "image" ]]; then
+            if [[ -z "${SONATYPE_USERNAME}" || -z "${SONATYPE_PASSWORD}" ]]; then
+              echo "Missing SONATYPE_USERNAME or SONATYPE_PASSWORD secret"
+              exit 1
+            fi
           fi
 
           if [[ "${PUBLISH_MODE}" == "snapshot" ]]; then
@@ -77,14 +85,38 @@ jobs:
             fi
           else
             if [[ "${version}" == *-SNAPSHOT ]]; then
-              echo "Release mode requires non-snapshot version. Current version: ${version}"
+              echo "Modes release and image require a non-snapshot version. Current version: ${version}"
               exit 1
             fi
+            if [[ -z "${DOCKERHUB_USERNAME}" || -z "${DOCKERHUB_TOKEN}" ]]; then
+              echo "Modes release and image require DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets"
+              exit 1
+            fi
+          fi
+
+          if [[ "${PUBLISH_MODE}" == "release" ]]; then
             if [[ -z "${SIGNING_GPG_SECRET_KEY}" || -z "${SIGNING_GPG_PASSWORD}" ]]; then
               echo "Release mode requires SIGNING_GPG_SECRET_KEY and SIGNING_GPG_PASSWORD secrets"
               exit 1
             fi
           fi
+
+      # Toolchain and credentials for the image, in the same role `setup-java` plays above. QEMU is
+      # what lets the arm64 half of the manifest build on an amd64 runner.
+      - name: Set up QEMU
+        if: steps.mode.outputs.publish_mode != 'snapshot'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.mode.outputs.publish_mode != 'snapshot'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: steps.mode.outputs.publish_mode != 'snapshot'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Publish artifacts
         shell: bash
@@ -95,10 +127,22 @@ jobs:
           SIGNING_GPG_SECRET_KEY: ${{ secrets.SIGNING_GPG_SECRET_KEY }}
           SIGNING_GPG_PASSWORD: ${{ secrets.SIGNING_GPG_PASSWORD }}
         # `verify` ahead of `publish`, in one invocation: what is uploaded is what has just passed
-        # the whole suite, rather than a rebuild of it from a second checkout.
+        # the whole suite, rather than a rebuild of it from a second checkout. `image` mode is the
+        # exception -- the jars for that version already passed it on their own release run.
         run: |
-          if [[ "${PUBLISH_MODE}" == "snapshot" ]]; then
-            ./gradlew --no-daemon --stacktrace clean verify publish
-          else
-            ./gradlew --no-daemon --stacktrace clean verify publish uploadArtifactsToSonatypeCentralPortal
-          fi
+          case "${PUBLISH_MODE}" in
+            snapshot)
+              ./gradlew --no-daemon --stacktrace clean verify publish
+              ;;
+            release)
+              ./gradlew --no-daemon --stacktrace clean verify publish \
+                  uploadArtifactsToSonatypeCentralPortal dockerPublish
+              ;;
+            image)
+              ./gradlew --no-daemon --stacktrace clean build dockerPublish
+              ;;
+            *)
+              echo "Unknown publish mode: ${PUBLISH_MODE}"
+              exit 1
+              ;;
+          esac

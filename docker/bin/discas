@@ -1,0 +1,43 @@
+#!/bin/sh
+#
+# Copyright (c) 2024-2026 Anatoly Gudkov and others.
+#
+# Licensed under the MIT License.
+# See the LICENSE file in the project root for details.
+#
+# Selects one of the three discas commands. `exec` so the JVM is PID 1 and SIGTERM reaches the
+# shutdown hook. The `:=` defaults fill a value only when it is unset, leaving CLI > ENV > DEFAULT
+# intact: they replace loopback binds, which nothing outside the container can reach.
+
+set -e
+
+# Ahead of JAVA_OPTS on the command line, so a later flag from the operator wins over any of them.
+java_defaults="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+
+command="${1:-node}"
+if [ $# -gt 0 ]; then shift; fi
+
+case "$command" in
+    node)
+        main=io.github.green4j.discas.node.starter.DisCasNodeStarter
+        : "${DISCAS_OBSERVABILITY_BIND:=0.0.0.0:9600}"
+        : "${DISCAS_CLIENT_BIND:=0.0.0.0:7002}"
+        : "${DISCAS_WAL_DIR:=/var/lib/discas}"
+        export DISCAS_OBSERVABILITY_BIND DISCAS_CLIENT_BIND DISCAS_WAL_DIR
+        ;;
+    agent)
+        main=io.github.green4j.discas.agent.starter.DisCasAgentStarter
+        : "${DISCAS_OBSERVABILITY_BIND:=0.0.0.0:9601}"
+        : "${DISCAS_HTTP_BIND:=0.0.0.0:8500}"
+        export DISCAS_OBSERVABILITY_BIND DISCAS_HTTP_BIND
+        ;;
+    admin)
+        main=io.github.green4j.discas.admin.starter.DisCasAdminStarter
+        ;;
+    *)
+        echo "Usage: discas {node|agent|admin} [options]" >&2
+        exit 64
+        ;;
+esac
+
+exec java $java_defaults $JAVA_OPTS -cp /opt/discas/lib/discas-all.jar "$main" "$@"

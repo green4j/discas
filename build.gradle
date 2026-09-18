@@ -38,6 +38,21 @@ def getConfigProperty(final String propertyName) {
     return value.trim()
 }
 
+// Gradle's process launcher does not do a PATH lookup the way a shell does: `commandLine 'docker'`
+// dies with "error=2, No such file or directory" even when docker is plainly on PATH. Resolve the
+// binary to an absolute path before exec'ing it.
+def dockerExecutable() {
+    def path = System.getenv('PATH') ?: ''
+    // Homebrew and Colima's own bin are appended: a GUI-launched or long-lived daemon can hold a
+    // PATH that predates them.
+    def dirs = path.split(File.pathSeparator).toList() +
+            ['/opt/homebrew/bin', '/usr/local/bin', "${System.getProperty('user.home')}/.docker/bin"]
+    return dirs.findResult { dir ->
+        def candidate = new File(dir as String, 'docker')
+        candidate.isFile() && candidate.canExecute() ? candidate.absolutePath : null
+    }
+}
+
 def addDepsFromProjects(pom, projects) {
     pom.withXml {
         def depsNode = asNode().appendNode('dependencies')
@@ -252,22 +267,6 @@ configure([commonProject,
             if (excludes) {
                 excludeTags excludes.split(',')
             }
-        }
-    }
-
-    // Gradle's process launcher does not do a PATH lookup the way a shell does: `commandLine
-    // 'docker'` dies with "error=2, No such file or directory" even when docker is plainly on
-    // PATH -- which silently disabled the whole lookup below. Resolve the binary to an absolute
-    // path ourselves before exec'ing it.
-    def dockerExecutable = {
-        def path = System.getenv('PATH') ?: ''
-        // Homebrew and Colima's own bin are appended: a GUI-launched or long-lived daemon can
-        // hold a PATH that predates them.
-        def dirs = path.split(File.pathSeparator).toList() +
-                ['/opt/homebrew/bin', '/usr/local/bin', "${System.getProperty('user.home')}/.docker/bin"]
-        return dirs.findResult { dir ->
-            def candidate = new File(dir as String, 'docker')
-            candidate.isFile() && candidate.canExecute() ? candidate.absolutePath : null
         }
     }
 
@@ -752,6 +751,96 @@ tasks.register('uploadArtifactsToSonatypeCentralPortal', SonatypeCentralPortalUp
     portalPassword.set(sonatypePassword)
     groupId.set(projectGroup)
     snapshotRelease.set(!isRelease)
+}
+
+// The container image. `discas-all`'s shaded jar is the whole payload -- five modules and all three
+// main classes in one file -- so the context is that jar, the entrypoint and the Dockerfile, and
+// nothing else. The version reaches the image as its tag rather than as anything baked inside.
+def dockerNamespace = project.findProperty('dockerNamespace') ?: 'green4j'
+def dockerImage = "${dockerNamespace}/${projectName}"
+def dockerContextDir = layout.buildDirectory.dir('docker').get().asFile
+
+// `latest` and the minor tag move only on a release, so a snapshot can never claim them.
+def dockerTagArgs = { ->
+    def tags = ["${dockerImage}:${projectVersion}"]
+    if (isRelease) {
+        tags << "${dockerImage}:${projectVersion.replaceAll(/^(\d+\.\d+).*/, '$1')}"
+        tags << "${dockerImage}:latest"
+    }
+    tags.collectMany { ['-t', it.toString()] }
+}
+
+// The image built for a release carries the commit it came from: an image published for a version
+// whose tag was cut earlier is not otherwise traceable to a tree.
+def dockerBuildArgs = { ->
+    ['--build-arg', "REVISION=${System.getenv('GITHUB_SHA') ?: 'unknown'}".toString()]
+}
+
+def requireDocker = { ->
+    def docker = dockerExecutable()
+    if (!docker) {
+        throw new GradleException('Docker was not found on PATH. The image tasks need the docker CLI.')
+    }
+    docker
+}
+
+// buildx is a CLI plugin rather than part of docker itself, and it is what assembles a manifest
+// list. Only the multi-architecture push needs it; a local build does not, so it is checked where
+// it is required rather than alongside the CLI.
+def requireBuildx = { String docker ->
+    def probe = new ProcessBuilder(docker, 'buildx', 'version')
+            .redirectErrorStream(true)
+            .start()
+    probe.inputStream.text
+    if (probe.waitFor() != 0) {
+        throw new GradleException('docker buildx was not found. It builds the multi-architecture '
+                + 'image, and ships with Docker Desktop or as the docker-buildx package.')
+    }
+}
+
+tasks.register('dockerContext', Sync) {
+    group = 'docker'
+    description = 'Stages the image build context: the bundled jar, the entrypoint and the Dockerfile'
+    into dockerContextDir
+    from('docker') { include 'Dockerfile' }
+    // Set here rather than with COPY --chmod, which would make the Dockerfile need BuildKit.
+    from('docker/bin') {
+        into 'bin'
+        filePermissions { unix(0755) }
+    }
+    from(project(':discas-all').tasks.named('shadowJar')) { rename '.*\\.jar', 'discas-all.jar' }
+}
+
+// Plain `docker build` rather than buildx: this is the local smoke test, one architecture, and it
+// should not need a CLI plugin to run.
+tasks.register('dockerBuild', Exec) {
+    group = 'docker'
+    description = 'Builds the image into the local daemon, current architecture only'
+    dependsOn 'dockerContext'
+    workingDir dockerContextDir
+    doFirst {
+        commandLine([requireDocker(), 'build'] + dockerBuildArgs() + dockerTagArgs() + ['.'])
+    }
+}
+
+// Multi-architecture and push in one step: buildx assembles the manifest list only when it pushes,
+// so there is no local image to tag afterwards.
+tasks.register('dockerPublish', Exec) {
+    group = 'publishing'
+    description = 'Builds the multi-architecture image and pushes it to Docker Hub'
+    dependsOn 'dockerContext'
+    workingDir dockerContextDir
+    doFirst {
+        if (!isRelease) {
+            throw new GradleException(
+                    'Image publishing requires a release version. Current version: ' + projectVersion)
+        }
+        def docker = requireDocker()
+        requireBuildx(docker)
+        commandLine([docker, 'buildx', 'build', '--push',
+                     '--platform', 'linux/amd64,linux/arm64']
+                + dockerBuildArgs() + dockerTagArgs() + ['.'])
+    }
 }
 
 // ExecOperations is the supported way to run a process from a build script, and reaches one only

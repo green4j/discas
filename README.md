@@ -68,9 +68,10 @@ linearizable read one, and there is no non-voting replica to place near distant 
 **Deployment.** The same node runs in two shapes. *Embedded* puts it inside the
 participating JVMs, and asks them to accept a fixed, identity-bound deployment shape in return.
 *Standalone* runs it as its own process, with the agent in front of it, so the store outlives any
-single application. On an elastic platform the recommended embedded topology pins `N` (3 or 5)
-instances as members and leaves the rest of the fleet as pure clients, so only the small fixed part
-is stateful. The trade in full:
+single application -- as a container, that is `green4j/discas`
+([16. Containers](docs/operator/16-containers.md)). On an elastic platform the recommended embedded
+topology pins `N` (3 or 5) instances as members and leaves the rest of the fleet as pure clients, so
+only the small fixed part is stateful. The trade in full:
 [Embedding a node](docs/user/06-embedding-a-node.md#the-trade-a-fixed-identity-bound-deployment-shape).
 
 ---
