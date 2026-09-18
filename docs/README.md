@@ -5,7 +5,8 @@ One page to try it, then four sets, one per audience.
 ## [QUICKSTART.md](QUICKSTART.md) -- for people meeting discas
 
 A three-node cluster and an HTTP agent on your laptop, and a key written and read back with `curl`.
-Ten minutes, no Docker, nothing to configure -- and everything on it has been run as written:
+Ten minutes, no JDK and nothing to build -- the published image, and everything on it has been run
+as written:
 
 | Question | Where |
 |---|---|

@@ -58,6 +58,23 @@ Compilation is `-Xlint:all -Werror`: a warning fails the build.
 For a fast inner loop on one module: `./gradlew :discas-node:compileJava`,
 `:discas-common:test --tests '*http.server*'`, and so on.
 
+## The image
+
+```bash
+./gradlew dockerBuild     # local daemon, current architecture only
+./gradlew dockerPublish   # buildx, linux/amd64 + linux/arm64, pushes to Docker Hub
+```
+
+`dockerContext` stages `build/docker` -- `discas-all`'s shaded jar, the entrypoint and
+`docker/Dockerfile`, nothing else -- and both tasks depend on it.
+
+Tags come from `version.txt`: a snapshot gets `<version>` alone, a release also gets
+`<major>.<minor>` and `latest`. `dockerPublish` refuses a snapshot outright, needs `docker buildx`,
+and is run by the `release` workflow rather than by hand. `-PdockerNamespace=<you>` retargets both
+tasks off `green4j`.
+
+What the image changes at runtime is [16. Containers](../operator/16-containers.md).
+
 ## Run a node
 
 Two ways, and they take identical arguments. From a build tree, launch the main class:

@@ -9,11 +9,29 @@ It runs embedded in your own JVM or as a standalone node, with no runtime depend
 
 ---
 
+## Try it
+
+```bash
+docker pull green4j/discas:0.0.5
+```
+
+One image carries all three commands -- `node`, `agent` and `admin`, selected by the first argument
+-- for `linux/amd64` and `linux/arm64`. Tags are `<version>`, `<major>.<minor>` and `latest`.
+
+Nothing to build and no JDK: [**Quickstart**](docs/QUICKSTART.md) takes it from that pull to three
+nodes, an agent, and a key read back with `curl`. What the image defaults, and how to mount its data
+directory, is [16. Containers](docs/operator/16-containers.md).
+
+On the JVM, the artifacts are on Maven Central under `io.github.green4j` --
+[1. Getting started](docs/user/01-getting-started.md) has the coordinates.
+
+---
+
 ## Documentation
 
 | Set | For |
 |---|---|
-| [**Quickstart**](docs/QUICKSTART.md) | people **meeting** discas: three nodes and an agent on localhost, and a key read back with `curl` |
+| [**Quickstart**](docs/QUICKSTART.md) | people **meeting** discas: three nodes and an agent from the published image, and a key read back with `curl` |
 | [**User Guide**](docs/user/README.md) | people **building on** discas: the client API, locks, scan and watch, embedding a node, writing a starter |
 | [**Agent manual**](docs/agent/README.md) | people **calling** discas over HTTP/JSON, from any language |
 | [**Operator Guide**](docs/operator/README.md) | people **running** discas: the node, membership, quorum, access, monitoring, backup, upgrades, runbooks |
@@ -158,6 +176,9 @@ are `SecureClientAclExample` and `SecureClusterFileMembersExample` in `discas-ex
 ---
 
 ## Build
+
+Building is for working **on** discas -- running it needs only the image above or the Central
+artifacts.
 
 `./gradlew build` compiles and tests everything; every module targets the `--release` set by
 `srcJavaVersion` in `gradle.properties`. The module

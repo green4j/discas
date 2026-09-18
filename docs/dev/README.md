@@ -24,7 +24,7 @@ survives here is the argument that cannot.
 | | |
 |---|---|
 | [1. Introduction](01-introduction.md) | what discas is, the pieces, the module graph, how to read the code |
-| [2. Development environment](02-development.md) | repository layout, build, running a node and a local cluster, debugging |
+| [2. Development environment](02-development.md) | repository layout, build, the image, running a node and a local cluster, debugging |
 | [3. CASPaxos](03-caspaxos.md) | the algorithm, and everything specific to this implementation |
 | [4. The node](04-node.md) | lifecycle, the single event loop, request flow, observability seams |
 | [5. Storage](05-storage.md) | the in-memory store, the WAL, snapshots, recovery |

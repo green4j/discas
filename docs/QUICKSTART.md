@@ -2,61 +2,69 @@
 
 A three-node cluster and an HTTP agent on your laptop, and a key written and read back with `curl`.
 
-You need a JDK that can build the project -- see `srcJavaVersion` in `gradle.properties` for the
-version the artifacts target, and the CI matrix in `.github/workflows/build.yml` for the JDKs the
-build is actually run on -- and `curl`.
+You need Docker and `curl`. Nothing is built here -- the image comes from Docker Hub and carries all
+three commands -- so no JDK, no Gradle, no clone. Building from source is a contributor's path, not
+this one; it is in [2. Development](dev/02-development.md).
 
-> This is a **throwaway cluster on loopback with no authentication and no TLS** -- the defaults are
-> open, which is the right setting for this page and the wrong one for anything else. Before running
-> discas where it matters, read [5. Access](operator/05-access.md).
+> This is a **throwaway cluster with no authentication and no TLS** -- the defaults are open, which
+> is the right setting for this page and the wrong one for anything else. Before running discas
+> where it matters, read [5. Access](operator/05-access.md).
 
 ---
 
-## 1. Build the commands
+## 1. Get the image
 
 ```bash
-./gradlew :discas-node:installDist :discas-agent:installDist :discas-admin:installDist
-
-export PATH="$PWD/discas-node/build/install/discas-node/bin:\
-$PWD/discas-agent/build/install/discas-agent/bin:\
-$PWD/discas-admin/build/install/discas-admin/bin:$PATH"
-
-discas-node --help | head -3
+export DISCAS_IMAGE=green4j/discas:0.0.5
+docker pull "$DISCAS_IMAGE"
 ```
 
-Prefer not to touch `PATH`? Every command below also runs from the jars, with identical arguments:
+`latest` and the minor tag `0.0` also exist and move on every release; a pinned version is what you
+want for anything you intend to reproduce. The image is `linux/amd64` and `linux/arm64`.
+
+**One image, three commands.** The first argument after the image selects which one runs, exactly
+as the `discas-node` / `discas-agent` / `discas-admin` scripts do:
 
 ```bash
-CP=$(ls discas-*/build/libs/*.jar | grep -v tests | paste -sd: -)
-
-java -cp "$CP" io.github.green4j.discas.node.starter.DisCasNodeStarter    # discas-node
-java -cp "$CP" io.github.green4j.discas.agent.starter.DisCasAgentStarter  # discas-agent
-java -cp "$CP" io.github.green4j.discas.admin.starter.DisCasAdminStarter  # discas-admin
+docker run --rm "$DISCAS_IMAGE" node --help | head -3
 ```
 
-See [1. discas in context](operator/01-context.md#two-ways-to-invoke-each-of-them).
+| Argument | Command | Main class |
+|---|---|---|
+| `node` (the default) | `discas-node` | `DisCasNodeStarter` |
+| `agent` | `discas-agent` | `DisCasAgentStarter` |
+| `admin` | `discas-admin` | `DisCasAdminStarter` |
 
-## 2. Pick ports
+Every option below is also an environment variable -- `--node-id` is `DISCAS_NODE_ID`,
+`--http-bind` is `DISCAS_HTTP_BIND` -- which is usually the better fit for a container. Flags win
+over the environment, which wins over the defaults. See
+[1. discas in context](operator/01-context.md#two-ways-to-invoke-each-of-them).
 
-discas reserves no well-known port numbers, so on one machine you assign every one of them. This
-page uses:
+## 2. Make a network
+
+```bash
+docker network create discas-quickstart
+```
+
+Containers on a user-defined network reach each other by container name, and each one has its own
+address. That removes the port juggling a single host forces: **every node can use the same ports
+inside the network**, and only what you publish to the host has to be unique.
 
 | | Node 1 | Node 2 | Node 3 | Agent |
 |---|---|---|---|---|
-| Peer (members talk here) | 7101 | 7102 | 7103 | -- |
-| Client (clients and the agent talk here) | 7201 | 7202 | 7203 | -- |
-| Observability (`/health`, `/ready`, `/metrics`) | 9601 | 9602 | 9603 | 9604 |
-| HTTP API | -- | -- | -- | 8500 |
+| Peer, in-network (members talk here) | 7001 | 7001 | 7001 | -- |
+| Client, in-network (clients and the agent talk here) | 7002 | 7002 | 7002 | -- |
+| Observability (`/health`, `/ready`, `/metrics`), published on the host | 9601 | 9602 | 9603 | 9604 |
+| HTTP API, published on the host | -- | -- | -- | 8500 |
 
-**One trap worth knowing before you hit it.** A node's observability port defaults to
-`127.0.0.1:9600` and the agent's to `127.0.0.1:9601` -- chosen so a node and an agent on the same
-host do not collide. Run *three* nodes on one host and that spacing runs out, which is why the agent
-gets an explicit `--observability-bind` below.
+**What the image already does for you.** Its entrypoint defaults the binds to `0.0.0.0` inside the
+container and the WAL to `/var/lib/discas`, because a loopback bind is unreachable from outside a
+container and would be the first thing everyone hit. So `--client-bind`, `--observability-bind` and
+`--wal-dir` are all left off below. They are defaults, not overrides: pass any of them and yours
+wins.
 
-```bash
-export DISCAS_HOME=/tmp/discas-quickstart
-rm -rf "$DISCAS_HOME" && mkdir -p "$DISCAS_HOME"
-```
+`--peer-bind` is not defaulted by the image and does not need to be -- it falls back to this node's
+own entry in the member list, which inside the container resolves to that container's address.
 
 ## 3. Start three nodes
 
@@ -65,20 +73,21 @@ to live somewhere.
 
 ### A. By hand
 
-No files to prepare: a node creates its own data directory, and `--peer-bind` defaults to this
-node's own entry in the member list, so it need not be repeated.
+Nothing to prepare: a node creates its own data directory on first start.
 
 ```bash
 for i in 1 2 3; do
-  discas-node \
-    --node-id $i --cluster-id quickstart \
-    --members 1=127.0.0.1:7101,2=127.0.0.1:7102,3=127.0.0.1:7103 \
-    --client-bind 127.0.0.1:720$i \
-    --wal-dir "$DISCAS_HOME/$i" \
-    --observability-bind 127.0.0.1:960$i \
-    > "$DISCAS_HOME/node-$i.log" 2>&1 &
+  docker run -d --name discas-$i --network discas-quickstart \
+    -p 960$i:9600 \
+    "$DISCAS_IMAGE" node \
+      --node-id $i --cluster-id quickstart \
+      --members 1=discas-1:7001,2=discas-2:7001,3=discas-3:7001
 done
 ```
+
+The WAL lives in each container's own filesystem, which is enough for this page: it survives
+`docker stop` and `docker start` -- which section 6 depends on -- and is thrown away with
+`docker rm`. For a cluster whose data you intend to keep, mount it, as **B** does.
 
 ### B. With `discas-admin init`
 
@@ -87,36 +96,46 @@ generated `RUN.md` with the start command for each one. It connects to nothing -
 prepare a cluster that does not exist yet, seeded from a dump (`--in`) or empty.
 
 ```bash
-discas-admin init \
-  --out-dir "$DISCAS_HOME/cluster" \
-  --cluster-id quickstart \
-  --members 1=127.0.0.1:7101,2=127.0.0.1:7102,3=127.0.0.1:7103 \
-  --client-port 7201 \
-  --data-dir "$DISCAS_HOME" --config-dir "$DISCAS_HOME"
+mkdir -p ~/discas-quickstart
 
-cat "$DISCAS_HOME/cluster/RUN.md"
+docker run --rm -v "$HOME/discas-quickstart:/out" "$DISCAS_IMAGE" admin init \
+  --out-dir /out/cluster \
+  --cluster-id quickstart \
+  --members 1=discas-1:7001,2=discas-2:7001,3=discas-3:7001 \
+  --client-port 7002 \
+  --data-dir /var/lib/discas --config-dir /var/lib/discas
+
+cat ~/discas-quickstart/cluster/RUN.md
 ```
+
+> **Bind mounts and your Docker host.** A home directory is shared with the VM by every common
+> setup; `/tmp` is not shared by some of them (Colima, for one), and a mount that is not shared
+> silently becomes an empty root-owned directory the container cannot write -- `init` then stops
+> with `permission denied`. Keep the path under your home directory and this does not arise.
 
 `RUN.md` carries the four rules that are not negotiable -- one directory, one member, forever; never
 copy a directory after a member has started on it; never point these at an existing cluster; start
 every member before sending traffic -- then an `scp` and a `discas-node` command per member.
 
-**On one machine, change one thing.** `init` assumes each member is on its own host, so it gives all
-three the same `--client-bind` port. Give each its own, and start them where they already are
-instead of `scp`-ing:
+**Those commands assume one host per member, which is the case worth designing for and not the one
+you are in.** Here the three members share a machine, so the step `RUN.md` writes as `scp` is a
+mount, and each member's directory goes to its own container:
 
 ```bash
 for i in 1 2 3; do
-  discas-node \
-    --node-id $i --cluster-id quickstart \
-    --members-file "$DISCAS_HOME/cluster/members.conf" \
-    --peer-bind 127.0.0.1:710$i \
-    --client-bind 127.0.0.1:720$i \
-    --wal-dir "$DISCAS_HOME/cluster/$i" \
-    --observability-bind 127.0.0.1:960$i \
-    > "$DISCAS_HOME/node-$i.log" 2>&1 &
+  docker run -d --name discas-$i --network discas-quickstart \
+    -p 960$i:9600 \
+    -v "$HOME/discas-quickstart/cluster/$i:/var/lib/discas/$i" \
+    -v "$HOME/discas-quickstart/cluster/members.conf:/var/lib/discas/members.conf:ro" \
+    "$DISCAS_IMAGE" node \
+      --node-id $i --cluster-id quickstart \
+      --members-file /var/lib/discas/members.conf \
+      --wal-dir /var/lib/discas/$i
 done
 ```
+
+`--members-file` is re-read at runtime, where the inline `--members` list of **A** is fixed at
+start. The mount is what makes the data outlive the container.
 
 ### Check they formed a cluster
 
@@ -141,12 +160,11 @@ cluster member: it holds no data and takes no part in consensus. Point it at the
 ports.
 
 ```bash
-discas-agent \
-  --nodes 1=127.0.0.1:7201,2=127.0.0.1:7202,3=127.0.0.1:7203 \
-  --client-id quickstart-agent \
-  --http-bind 127.0.0.1:8500 \
-  --observability-bind 127.0.0.1:9604 \
-  > "$DISCAS_HOME/agent.log" 2>&1 &
+docker run -d --name discas-agent --network discas-quickstart \
+  -p 8500:8500 -p 9604:9601 \
+  "$DISCAS_IMAGE" agent \
+    --nodes 1=discas-1:7002,2=discas-2:7002,3=discas-3:7002 \
+    --client-id quickstart-agent
 
 sleep 5
 curl -s 127.0.0.1:8500/v1/agent/health
@@ -225,21 +243,48 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8500/v1/kv/app/theme  
 The cluster tolerates losing a minority. With `N`=3, one node:
 
 ```bash
-pkill -f -- '--node-id 3'
+docker stop discas-3
+curl -s -X PUT --data-binary 'yes' http://127.0.0.1:8500/v1/kv/app/still-works
+```
+
+One of two things comes back. If the agent was not talking to node 3, the write never noticed:
+
+```json
+{"ok":true}
+```
+
+If it was, the write was in flight to a coordinator that stopped answering, and you get this
+instead:
+
+```json
+{"error":"Unfenced write dispatched to a coordinator that did not answer; not re-sent"}
+```
+
+**That is the correct answer, not a bug, and it is worth the detour.** A plain `PUT` carries no
+version, so nothing about it is fenced: replayed, it would apply a second time. The agent cannot
+tell "node 3 died before it applied this" from "node 3 applied it and died before replying", so it
+refuses to guess and hands the ambiguity to you rather than resolving it silently. Send it again and
+it goes to a live coordinator:
+
+```bash
 curl -s -X PUT --data-binary 'yes' http://127.0.0.1:8500/v1/kv/app/still-works
 ```
 ```json
 {"ok":true}
 ```
 
-Writes keep working: two of three is a majority, and the agent failed over to a node that could
-still reach one. Nothing had to be reconfigured and nothing declared node 3 dead -- a peer that is
-down is simply not part of a quorum.
+A write that *is* fenced -- one with `?cas=` -- never needs that judgement call: replaying it is
+safe, because the version it names has already moved. This is the whole argument for versioned
+writes, and it is worked through in
+[Keys and values: the one that needs care](user/02-key-value.md#the-one-that-needs-care).
+
+So: two of three is a majority, and writes continue. Nothing had to be reconfigured and nothing
+declared node 3 dead -- a peer that is down is simply not part of a quorum.
 
 Kill a second and the majority is gone:
 
 ```bash
-pkill -f -- '--node-id 2'
+docker stop discas-2
 curl -s -m 20 -X PUT --data-binary 'no' http://127.0.0.1:8500/v1/kv/app/broken
 curl -s 'http://127.0.0.1:8500/v1/kv/app/still-works?raw&stale'
 ```
@@ -248,16 +293,26 @@ curl -s 'http://127.0.0.1:8500/v1/kv/app/still-works?raw&stale'
 yes
 ```
 
-Linearizable writes stop, and reads that tolerate staleness keep being answered from the surviving
-node's local committed state. Start the two nodes again and the cluster resumes on its own -- there
-is no readmission step ([4. Quorum](operator/04-quorum.md#losing-quorum)).
+Linearizable writes stop -- the exact error depends on how far the attempt got, so the unfenced
+message above is equally likely here -- and reads that tolerate staleness keep being answered from
+the surviving node's local committed state.
+
+Start the two nodes again and the cluster resumes on its own; there is no readmission step
+([4. Quorum](operator/04-quorum.md#losing-quorum)). Give the mesh a few seconds to re-handshake
+before expecting a write to land:
+
+```bash
+docker start discas-2 discas-3
+sleep 15
+curl -s 'http://127.0.0.1:8500/v1/kv/app/still-works?raw'    # -> yes
+```
 
 ## 7. Tear down
 
 ```bash
-pkill -f DisCasNodeStarter
-pkill -f DisCasAgentStarter
-rm -rf "$DISCAS_HOME"
+docker rm -f discas-1 discas-2 discas-3 discas-agent
+docker network rm discas-quickstart
+rm -rf ~/discas-quickstart          # only if you ran 3B
 ```
 
 ---
@@ -269,7 +324,7 @@ rm -rf "$DISCAS_HOME"
 | Writing an application against it | [User Guide](user/README.md) -- the Java client, locks, scan and watch |
 | Calling it over HTTP from any language | [Agent manual](agent/README.md) -- the full surface, curl-first |
 | Going to run it somewhere real | [Operator Guide](operator/README.md) -- start with [5. Access](operator/05-access.md), because everything on this page was unauthenticated |
-| Working on discas itself | [Developer Guide](dev/README.md) |
+| Working on discas itself | [Developer Guide](dev/README.md) -- building from source, and [the same cluster without containers](dev/02-development.md#a-local-cluster) |
 
 Two things this page skipped that matter as soon as it is not a laptop: **authentication and TLS**
 are off, and this cluster's `N` is 3 and **frozen** -- resizing is a planned operation, not a live
